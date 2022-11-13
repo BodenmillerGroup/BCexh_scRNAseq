@@ -1,0 +1,167 @@
+---
+title: "10x_run1_DoubletFinder"
+author: "SandraTietscher"
+date: "2019 M06 17"
+output: html_document
+---
+
+
+## Load libraries and data
+
+```{r}
+if (!require(ggplot2)) install.packages('ggplot2')
+library(ggplot2)
+
+if (!require(dplyr)) install.packages('dplyr')
+library(dplyr)
+
+if (!require(Seurat)) install.packages('Seurat')
+library(Seurat)
+
+if (!require(DoubletFinder)) devtools::install_github('chris-mcginnis-ucsf/DoubletFinder')
+library(DoubletFinder)
+
+#if (!require(reticulate)) install.packages("reticulate")
+#library(reticulate)
+#use_condaenv("r-reticulate")
+#conda_install("r-reticulate", "umap-learn")
+#reticulate::py_install(packages ='umap-learn')
+#use_python("C:/Users/SandraT/AppData/Local/Continuum/anaconda3/envs/r-reticulate/python.exe")
+#umap-learn <- import("umap-learn")
+
+in.path = "~/Data/Sequencing_data/10x_pilot/"
+out.path = "~/Code/10x/10x_Run1_Pilot_comb/output/DoubletFinder/TBB338/"
+TBB338.data <- Read10X(paste0(in.path, "TBB338/filtered_feature_bc_matrix"))
+```
+
+# Individual Sample preprocessing
+
+```{r}
+
+# Create Seurat object
+TBB338 <- CreateSeuratObject(counts = TBB338.data, min.cells = 5, min.features = 200, project = "TBB338")
+TBB338 <- AddMetaData(TBB338, "TIG2", col.name = 'TIG')
+TBB338 <- AddMetaData(TBB338, "pilot", col.name = 'batch')
+rm(TBB338.data)
+
+# Calculate mitotic percentage
+mito.features <- grep(pattern = "^MT-", x = rownames(x = TBB338), value = TRUE)
+percent.mito <- Matrix::colSums(x = GetAssayData(object = TBB338, slot = 'counts')[mito.features, ]) / Matrix::colSums(x = GetAssayData(object = TBB338, slot = 'counts'))
+TBB338[['percent.mito']] <- percent.mito
+
+# Pre-process Seurat object
+TBB338 <- NormalizeData(TBB338)
+TBB338 <- ScaleData(TBB338)
+TBB338 <- FindVariableFeatures(TBB338, x.low.cutoff = 0.0125, y.cutoff = 0.25, do.plot=FALSE)
+TBB338 <- RunPCA(TBB338, features = VariableFeatures(object = TBB338), verbose = FALSE)
+TBB338 <- RunTSNE(object = TBB338, dims = 1:10)
+TBB338 <- RunUMAP(object = TBB338, dims = 1:10)
+
+#explore PCA
+DimHeatmap(object = TBB338, dims = 10:30, cells = 500, balanced = TRUE)
+ElbowPlot(object = TBB338, ndim = 30)
+
+
+FeaturePlot(TBB338, reduction = 'umap', features = "nFeature_RNA")
+DimPlot(TBB338, label = TRUE, group.by = "RNA_snn_res.0.4")
+DimPlot(TBB338, label = TRUE, reduction = 'tsne')
+```
+
+## Graph-based clustering
+Low resolution clustering as basis for homotypic doublet model.
+
+```{r}
+TBB338 <- FindNeighbors(object = TBB338, dims = 1:10)
+TBB338 <- FindClusters(object = TBB338, resolution = 0.4)
+
+VlnPlot(object = TBB338, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3, pt.size = 0, sort = FALSE)
+FeaturePlot(TBB338, reduction = 'umap', features = c("CD3E", "CD14", "PTPRC", "EPCAM", "PECAM1", "FAP"))
+```
+## Assigning cell type identity to clusters
+
+```{r}
+#Read in table with cluster ids
+cluster.ids <- read.csv(file = paste0(out.path, "cluster_celltype.csv"))
+
+new.cluster.ids <- cluster.ids$celltype
+new.cluster.ids <- as.character(new.cluster.ids)
+names(x = new.cluster.ids) <- levels(x = TBB338)
+TBB338 <- RenameIdents(object = TBB338, new.cluster.ids)
+
+#Save celltype information in metadata
+TBB338[["annotation"]] <- Idents(object = TBB338)
+
+# plot_celltype 
+DimPlot(object = TBB338, reduction = 'umap', label = FALSE, pt.size = 0.5, group.by = "annotation")
+```
+## pK identification
+
+```{r}
+
+sweep.res.list_TBB338 <- paramSweep_v3(TBB338, PCs = 1:12)
+sweep.stats_TBB338 <- summarizeSweep(sweep.res.list_TBB338, GT = FALSE)
+bcmvn_TBB338 <- find.pK(sweep.stats_TBB338)
+
+```
+
+## Homotypic Doublet Proportion Estimate 
+```{r}
+annotations <- TBB338@meta.data$annotation
+homotypic.prop <- modelHomotypic(annotations)           ## ex: annotations ~ number of cell types present
+nExp_poi <- round(0.12*length(TBB338@meta.data$nFeature_RNA))  ## Assuming 12% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+```
+
+
+## Run DoubletFinder with varying classification stringencies 
+```{r}
+TBB338 <- doubletFinder_v3(TBB338, PCs = 1:15, pN = 0.25, pK = 0.005, nExp = nExp_poi, reuse.pANN = FALSE)
+TBB338 <- doubletFinder_v3(TBB338, PCs = 1:15, pN = 0.25, pK = 0.005, nExp = nExp_poi.adj, reuse.pANN = "pANN_0.25_0.005_2070")
+```
+
+## Plot results 
+```{r}
+TBB338@meta.data[,"DF_hi.lo"] <- TBB338@meta.data$DF.classifications_0.25_0.005_2070
+TBB338@meta.data$DF_hi.lo[which(TBB338@meta.data$DF_hi.lo == "Doublet" & TBB338@meta.data$DF.classifications_0.25_0.005_1533 == "Singlet")] <- "Doublet_lo"
+TBB338@meta.data$DF_hi.lo[which(TBB338@meta.data$DF_hi.lo == "Doublet")] <- "Doublet_hi"
+UMAPPlot(TBB338, group.by="DF_hi.lo", plot.order=c("Doublet_hi","Doublet_lo","Singlet"), colors.use=c("black","gold","red"))
+
+ggsave(file = paste0(out.path, 'DFplot_pk0.005.png'))
+```
+
+## Sanity checks
+
+```{r}
+
+# find all markers of cluster 15
+#cluster15.markers <- FindMarkers(object = TBB338, ident.1 = 15, min.pct = 0.25)
+#head(x = cluster15.markers, n = 15)
+
+DimPlot(TBB338, label = TRUE)
+DotPlot(object = TBB338, features = c("CD3E", "CD14", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB338, features = c("CD3E", "CD14", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB338, features = c("FAP", "PECAM1", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB338, features = c("CD14", "CD3E"))
+FeaturePlot(object = TBB338, features = c("MKI67"), split.by = "DF_hi.lo")
+
+FeatureScatter(TBB338, feature1 = "CD3E", feature2 = "CD14", group.by = "DF_hi.lo")
+ggsave(file = paste0(out.path, 'DF_pk0.005_CD3vsCD14.png'))
+
+VlnPlot(TBB338, features = "nFeature_RNA", group.by = "DF_hi.lo", pt.size = 0)
+
+table(TBB338@meta.data$DF_hi.lo, TBB338@meta.data$RNA_snn_res.0.4)
+```
+
+## Create a subset excluding high-confidence doublets
+```{r}
+Idents(TBB338) <- TBB338@meta.data$DF_hi.lo
+
+# Create a Seurat object with only the immune cell clusters
+TBB338.singlet <- SubsetData(object = TBB338, ident.use = c("Singlet", "Doublet_lo"))
+
+#Test
+DimPlot(object = TBB338.singlet, reduction = 'tsne', pt.size = 0.5)
+
+#Save Seurat object
+saveRDS(TBB338.singlet, file = paste0(out.path, "TBB338_singlet.rds"))
+```

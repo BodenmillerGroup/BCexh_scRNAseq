@@ -1,0 +1,279 @@
+---
+title: "Fig3_cytotoxicity"
+author: "Sandra Tietscher"
+date: "4/27/2020"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(clustree)
+library(magrittr)
+library(viridis)
+library(scales)
+library(patchwork)
+library(ComplexHeatmap)
+library(ouija)
+library(ggpubr)
+
+in.path = "Z://sandrat/Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/Fig3/" 
+all.Tcell <- readRDS(file=paste0(in.path, 'run1_Tcell_15dim.rds'))
+
+#cytotoxic genes
+GOI <- c("GZMA", "GZMB", "GZMH", "GZMK", "GNLY", "PRF1", "FASLG", "TNF", "IFNG")
+
+#ouija calculation genes
+oui.genes <- c("CCR7", "IL7R", "SELL", "CD69", "PDCD1", "CXCL13", "LAG3", "HAVCR2", "CD27", "CD38", "TIGIT", "CTLA4", "ENTPD1", "GZMB", "FASLG", "TCF7", "KLRG1", "CX3CR1", "FCGR3A", "PRF1", "TNF", "IFNG", "GZMK")
+
+oui.genes.red <- c("CCR7", "IL7R", "SELL", "CD69", "PDCD1", "CXCL13", "LAG3", "HAVCR2", "CD27", "CD38", "TIGIT", "CTLA4", "ENTPD1", "TCF7", "KLRG1", "CX3CR1", "FCGR3A")
+
+# Color palette
+colors <- hue_pal()(50)
+show_col(colors)
+```
+
+## Pseudobulk analysis
+
+```{r}
+#load pseudobulk data
+edger = read.csv(paste0(in.path, "pseudobulk/TIG3vsTIG2_EdgeR_samplesums_exactT_filtered.csv"))
+#invert sign to show genes that are upregulated in TIG2 (not downregulated in TIG3)
+edger$logFC <- -(edger$logFC)
+colnames(edger)[1] <- "gene"
+
+#define FDR cutoffs
+edger$FDR_y <- ifelse(edger$FDR<0.01, "<0.01", ifelse(edger$FDR<0.1, "<0.1", ifelse(edger$FDR<0.3, "<0.3", ">0.3"))) 
+edger$p_y <- ifelse(edger$PValue<0.05, "<0.05", ">0.05")
+cols <- c('#690085', "#C80DFF", "#FF6DFF", "#A0A0A0")
+names(cols) <- c("<0.01", "<0.1", "<0.3", ">0.3")
+
+#plot
+p = subset(edger, gene %in% GOI)%>%
+  ggplot(aes(x= factor(gene, levels=rev(GOI)), y = logFC))+
+  geom_col(aes(fill=FDR_y))+
+  #scale_fill_gradient2(low = "#009900", mid = "grey70", high = "grey70", midpoint = 0.6)+
+  scale_fill_manual(values = cols)+
+  labs(y="logFC: TIG2 vs. TIG3", x="gene")+
+  coord_flip()+
+  labs(fill="False Discovery Rate")+
+  theme(panel.background=element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+```
+
+## Cluster averages
+
+```{r}
+#Calculate cluster averages
+Idents(all.Tcell) <- all.Tcell$cluster
+cluster.averages.table <- AverageExpression(object = all.Tcell, return.seurat = FALSE, assays = "RNA")
+RNA.average <- as.matrix(cluster.averages.table[[1]])
+
+#Normalize between 0 and 1
+RNA.average.norm <- apply(RNA.average, 1, function(x)(x-min(x))/(max(x)-min(x)))
+
+col_split <- factor(c("Treg", "Tnaive", rep("cytotoxic",4), "exhausted", "Tfh", "Tfh", rep("mixed",4), "T-proliferating", "NKT", rep("NK",3), "NK_activated"))
+col_split <- factor(col_split, levels = levels(col_split)[c(10,8,1,2,7,3,9,6,4,5)])
+
+#plot
+p = Heatmap(t(subset(RNA.average.norm, select=GOI)), show_row_names = TRUE, row_dend_side = "left", heatmap_legend_param = list(title = "Normalized\nmean counts"), col=viridis(100), cluster_rows = FALSE, cluster_columns=FALSE, row_names_side = "left", column_names_side = "top", column_names_rot = 90, column_dend_side = "bottom", row_names_gp = gpar(fontsize = 6), cluster_column_slices = FALSE, column_split = col_split)
+```
+
+# Pseudotime general
+
+```{r}
+### Prepare ###
+
+## Subset CD8_exhausted, cytotoxic and naive T cells
+Idents(all.Tcell) <- all.Tcell$cluster
+CD8 <- subset(all.Tcell, idents = c("T-naive", "T-cytotoxic-1", "T-cytotoxic-2","T-cytotoxic-3","T-cytotoxic-4", "T-CD8-exhausted"))
+
+# Subsample max 800 cells per sample
+Idents(CD8) <- CD8$orig.ident
+CD8.sub.800 <- SubsetData(object = CD8, max.cells.per.ident=800, random.seed=11)
+
+# Read in ouija object (or calculate new, but this takes ~48h when using 6000 iterations)
+oui <- readRDS(file = paste0(in.path, "pseudotime/ouija/CD8_cytotoxic_new_sub800_6000iter/ouija_CD8_sub800each_6000iter_new.rds"))
+
+#extract pseudotime and add to CD8 object metadata
+tmap <- map_pseudotime(oui)
+CD8.sub.800$pseudotime <- tmap
+CD8.df <- CD8.sub.800@meta.data
+CD8.df <- droplevels(CD8.df)
+
+## Rank cells by pseudotime
+CD8.df<- setorder(CD8.df, pseudotime)
+CD8.df$rank <- c(1:nrow(CD8.df))
+
+### Plot metacluster density ###
+p_density <- ggplot(CD8.df)+
+  geom_density(aes(x = rank, color = metacluster), size = 1)+
+  scale_color_manual(values = colors[c(4, 19, 31)])+
+  theme(panel.background = element_blank())
+
+### Plot cell jitter ###
+p_jitter <- ggplot(CD8.df, aes(rank, rnorm(8364), color=metacluster))+
+  geom_jitter(alpha = 0.5, size = 1)+
+  scale_color_manual(values = colors[c(4, 19, 31)])+
+  theme(panel.background=element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+
+### Plot cluster averages ###
+cluster.mean <- CD8.df %>% 
+  group_by(cluster) %>% 
+  summarise(mean = mean(rank))
+
+p_cluster <- ggplot(data = cluster.mean, aes(mean, "cells", fill = cluster))+
+  geom_point(pch=24, size = 4, color="black")+
+  scale_fill_manual(values = colors[c(3, 9, 17, 28, 36, 44)])+
+    theme(panel.background=element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())+
+  xlim(0,8346)
+
+### Plot sample averages ###
+patient.mean <- CD8.df %>% 
+  group_by(orig.ident) %>% 
+  summarise(mean = mean(rank))
+colnames(patient.mean) <- c("patient", "mean_pseudotime")
+patient.mean$TIG <- c("TIG2", "TIG3", "TIG3","TIG3", "TIG2", "TIG2","TIG2","TIG2","TIG2","TIG3","TIG3","TIG3","TIG3","TIG2")
+
+pos <- position_jitter(height = 0.2, seed = 1)
+p_patient <- ggplot(data = patient.mean, aes(mean_pseudotime, "cells", fill = TIG))+
+  geom_jitter(pch=21, size = 3, color="black", position = pos)+
+    theme(panel.background=element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())+
+  xlim(0,8346)
+
+p <- p_density/p_jitter/p_cluster/p_patient
+  
+```
+
+## Gene expression over pseudotime
+
+```{r}
+#genes <- GOI
+genes <- oui.genes.red
+
+## Merge gene expression values with metadata for cells included in ouija
+exprs <- as.matrix(CD8.sub.800@assays$RNA@counts[genes,])
+exp.df <- as.data.frame(t(exprs))
+CD8.df.exp <- merge(CD8.df, exp.df, by = "row.names")
+
+## Rank cells by pseudotime
+CD8.df.exp <- setorder(CD8.df.exp, pseudotime)
+CD8.df.exp$rank <- c(1:nrow(CD8.df.exp))
+
+#CD8.df.exp <- gather(CD8.df.exp, key = "gene", value = "expression", 30:38)
+#CD8.df.exp <- gather(CD8.df.exp, key = "gene", value = "expression", 30:52)
+CD8.df.exp <- gather(CD8.df.exp, key = "gene", value = "expression", 30:46)
+
+## Plot expression of cytotoxic genes
+p <- ggplot()+
+  geom_point(data = CD8.df.exp, aes(rank, log2(expression+1)), color = "grey70", alpha = 0.5, size = 0.5)+
+  stat_smooth(data = CD8.df.exp, aes(rank, log2(expression+1)), color = "red", method = "loess")+
+  facet_wrap(~gene, ncol = 4, scales = "fixed")+
+      theme(panel.background=element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        axis.text.x = element_blank(),
+        strip.background = element_blank())
+```
+
+# Correlation of mean pseudotime with NKT cell frequency (on a patient-basis)
+
+```{r}
+NKT.prop <- prop.table(x=table(all.Tcell$cluster, all.Tcell$orig.ident), margin=2)["NKT",]
+patient.mean$NKT <- NKT.prop
+
+#subset TIG2 only
+patient.mean.TIG2 <- patient.mean[patient.mean$TIG=="TIG2",]
+
+p = ggplot(patient.mean.TIG2, aes(x=mean_pseudotime, y=NKT)) +
+geom_point(aes(color=TIG), size = 2)+
+  stat_cor(method="spearman")+
+  geom_smooth(method = lm, se =FALSE, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none")+
+  ylab("NKT proportion")+
+  xlab("Mean pseudotime")
+```
+
+
+# Correlation of mean pseudotime with mean gene expression (on a whole-sample basis)
+
+```{r}
+Idents(all.Tcell) <- all.Tcell$orig.ident
+sample.averages <- AverageExpression(object = all.Tcell, return.seurat = FALSE, assays = "RNA")
+GOI.avg <- as.data.frame(t(sample.averages[[1]][GOI,]))
+GOI.avg$patient <- rownames(GOI.avg)
+GOI.merge <- merge(GOI.avg, patient.mean, by = "patient")
+GOI.merge2 <- gather(GOI.merge, key = "gene", value = "mean_expression", 2:10)
+
+#subset TIG2 only
+GOI.merge2.TIG2 <- GOI.merge2[GOI.merge2$TIG=="TIG2",]
+
+p = ggplot(GOI.merge2.TIG2, aes(x=mean_pseudotime, y=mean_expression)) +
+geom_point(aes(color=TIG), size = 2)+
+  stat_cor(method="spearman")+
+  geom_smooth(method = lm, se =FALSE, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none")+
+  ylab("Mean gene expression")+
+  xlab("Mean pseudotime")+
+  facet_wrap(~gene, scales = "free")
+```
+
+## CSF1 expression
+
+```{r}
+#Feature Plot
+p1 <- FeaturePlot(all.Tcell, "CSF1")
+
+#Highlight NKT cells on umap
+Idents(all.Tcell) <- all.Tcell$cluster
+cells.NKT = WhichCells(object = all.Tcell, ident = c("NKT"))
+p2 <- DimPlot(object = all.Tcell, reduction = 'umap', cells.highlight = cells.NKT, na.value = "grey20", pt.size = 1.5)+
+  aes(alpha=0.01, stroke = 0)
+
+p_comb <- p1/p2
+
+#Heatmap of cluster averages (normalized)
+sub.avg <- subset(RNA.average.norm, select="CSF1")
+p3 = Heatmap(t(sub.avg), show_row_names = TRUE, row_dend_side = "left", heatmap_legend_param = list(title = "Normalized\nmean counts"), col=viridis(100), cluster_rows = FALSE, cluster_columns=FALSE, row_names_side = "left", column_names_side = "top", column_names_rot = 90, column_dend_side = "bottom", row_names_gp = gpar(fontsize = 6), cluster_column_slices = FALSE, column_split = col_split)
+
+#Barplot of cluster averages (raw)
+sub.avg <- as.data.frame(RNA.average[c("CSF1"),])
+colnames(sub.avg) <- "CSF1"
+sub.avg$cluster <- rownames(sub.avg)
+sub.avg$cluster <- factor(sub.avg$cluster, levels = sub.avg$cluster[1:19])
+
+p4 <- ggplot(sub.avg, aes(cluster, CSF1))+
+  geom_col()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none",
+        axis.text.x = element_text(angle = 90, hjust=1))+
+  ylab("CSF1 (mean counts)")
+```
+
+
+
+

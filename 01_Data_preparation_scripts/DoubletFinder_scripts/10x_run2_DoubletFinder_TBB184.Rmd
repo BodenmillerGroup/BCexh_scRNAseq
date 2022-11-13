@@ -1,0 +1,169 @@
+---
+title: "10x_run1_DoubletFinder"
+author: "SandraTietscher"
+date: "2019 M06 17"
+output: html_document
+---
+
+
+## Load libraries and data
+
+```{r}
+if (!require(ggplot2)) install.packages('ggplot2')
+library(ggplot2)
+
+if (!require(dplyr)) install.packages('dplyr')
+library(dplyr)
+
+if (!require(Seurat)) install.packages('Seurat')
+library(Seurat)
+
+#if (!require(DoubletFinder)) #devtools::install_github('chris-mcginnis-ucsf/DoubletFinder')
+library(DoubletFinder)
+
+
+in.path = "C:/Users/SandraT/BBlab/Macrophages/Sorting/scRNA_seq/Data/10x/Run_02/CellRangerCount_40342_2019-10-15--13-52-11/"
+out.path = "Z:/server_homes/sandrat/Code/10x/DoubletFinder/output/TBB184/"
+TBB184.data <- Read10X(paste0(in.path, "TBB184/filtered_feature_bc_matrix"))
+```
+
+# Individual Sample preprocessing
+
+```{r}
+
+# Create Seurat object
+TBB184 <- CreateSeuratObject(counts = TBB184.data, min.cells = 5, min.features = 200, project = "TBB184")
+TBB184 <- AddMetaData(TBB184, "TIG2", col.name = 'TIG')
+TBB184 <- AddMetaData(TBB184, "B5", col.name = 'batch')
+rm(TBB184.data)
+
+# Calculate mitotic percentage
+mito.features <- grep(pattern = "^MT-", x = rownames(x = TBB184), value = TRUE)
+percent.mito <- Matrix::colSums(x = GetAssayData(object = TBB184, slot = 'counts')[mito.features, ]) / Matrix::colSums(x = GetAssayData(object = TBB184, slot = 'counts'))
+TBB184[['percent.mito']] <- percent.mito
+
+# Pre-process Seurat object
+TBB184 <- NormalizeData(TBB184)
+TBB184 <- ScaleData(TBB184)
+TBB184 <- FindVariableFeatures(TBB184, x.low.cutoff = 0.0125, y.cutoff = 0.25, do.plot=FALSE)
+TBB184 <- RunPCA(TBB184, features = VariableFeatures(object = TBB184), verbose = FALSE)
+#TBB184 <- RunTSNE(object = TBB184, dims = 1:10)
+TBB184 <- RunUMAP(object = TBB184, dims = 1:10)
+
+FeaturePlot(TBB184, reduction = 'umap', features = "nFeature_RNA")
+DimPlot(TBB184, label = TRUE, group.by = "RNA_snn_res.0.4")
+DimPlot(TBB184, label = TRUE, reduction = 'umap')
+```
+
+## Graph-based clustering
+Low resolution clustering as basis for homotypic doublet model.
+
+```{r}
+TBB184 <- FindNeighbors(object = TBB184, dims = 1:10)
+TBB184 <- FindClusters(object = TBB184, resolution = 0.4)
+
+VlnPlot(object = TBB184, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3, pt.size = 0, sort = FALSE)
+FeaturePlot(TBB184, reduction = 'umap', features = c("CD3E", "CD14", "PTPRC", "EPCAM", "PECAM1", "FAP"))
+```
+## Assigning cell type identity to clusters
+
+```{r}
+#Read in table with cluster ids
+cluster.ids <- read.csv(file = paste0(out.path, "cluster_celltype.csv"))
+
+new.cluster.ids <- cluster.ids$celltype
+new.cluster.ids <- as.character(new.cluster.ids)
+names(x = new.cluster.ids) <- levels(x = TBB184)
+TBB184 <- RenameIdents(object = TBB184, new.cluster.ids)
+
+#Save celltype information in metadata
+TBB184[["annotation"]] <- Idents(object = TBB184)
+
+# plot_celltype 
+DimPlot(object = TBB184, reduction = 'umap', label = FALSE, pt.size = 0.5, group.by = "annotation")
+```
+## pK identification
+
+```{r}
+
+sweep.res.list_TBB184 <- paramSweep_v3(TBB184, PCs = 1:10)
+sweep.stats_TBB184 <- summarizeSweep(sweep.res.list_TBB184, GT = FALSE)
+bcmvn_TBB184 <- find.pK(sweep.stats_TBB184)
+write.csv(bcmvn_TBB184, file=paste0(out.path, "pK_identification.csv"))
+
+```
+
+## Homotypic Doublet Proportion Estimate 
+```{r}
+annotations <- TBB184@meta.data$annotation
+homotypic.prop <- modelHomotypic(annotations)           ## ex: annotations ~ number of cell types present
+nExp_poi <- round(0.105*length(TBB184@meta.data$nFeature_RNA))  ## Assuming 8% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+```
+
+
+## Run DoubletFinder with varying classification stringencies 
+```{r}
+TBB184 <- doubletFinder_v3(TBB184, PCs = 1:10, pN = 0.25, pK = 0.02, nExp = nExp_poi, reuse.pANN = FALSE)
+TBB184 <- doubletFinder_v3(TBB184, PCs = 1:10, pN = 0.25, pK = 0.02, nExp = nExp_poi.adj, reuse.pANN = "pANN_0.25_0.02_1366")
+```
+
+## Plot results 
+```{r}
+TBB184@meta.data[,"DF_hi.lo"] <- TBB184@meta.data$DF.classifications_0.25_0.02_1366
+TBB184@meta.data$DF_hi.lo[which(TBB184@meta.data$DF_hi.lo == "Doublet" & TBB184@meta.data$DF.classifications_0.25_0.02_1054 == "Singlet")] <- "Doublet_lo"
+TBB184@meta.data$DF_hi.lo[which(TBB184@meta.data$DF_hi.lo == "Doublet")] <- "Doublet_hi"
+DFplot_105perc_pK0.13 <- DimPlot(TBB184, group.by="DF_hi.lo", plot.order=c("Doublet_hi","Doublet_lo","Singlet"), colors.use=c("black","gold","red"))
+
+ggsave(paste0(out.path, "umap_doublets_pk0.02.png"))
+```
+
+## Sanity checks
+
+```{r}
+
+# find all markers of cluster 15
+#cluster15.markers <- FindMarkers(object = TBB184, ident.1 = 15, min.pct = 0.25)
+#head(x = cluster15.markers, n = 15)
+
+DimPlot(TBB184, label = TRUE)
+DotPlot(object = TBB184, features = c("CD3E", "CD14", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB184, features = c("CD3E", "CD14", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB184, features = c("FAP", "PECAM1", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB184, features = c("CD14", "MKI67"))
+FeaturePlot(object = TBB184, features = c("MKI67"), split.by = "DF_hi.lo")
+
+FeatureScatter(TBB184, feature1 = "CD3E", feature2 = "MS4A1", group.by = "DF_hi.lo")
+ggsave(paste0(out.path, "FeatureScatter_pk0.02_CD3_CD20.png"))
+
+table(TBB184@meta.data$DF_hi.lo, TBB184@meta.data$annotation)
+```
+
+## Create a subset excluding high-confidence doublets
+```{r}
+Idents(TBB184) <- TBB184@meta.data$DF_hi.lo
+
+# Create a Seurat object with only the immune cell clusters
+TBB184.singlet <- subset(x = TBB184, idents =c("Singlet", "Doublet_lo"))
+
+#Test
+DimPlot(object = TBB184.singlet, reduction = 'umap', pt.size = 0.5)
+
+#Remove unnecessary Metadata columns
+TBB184.singlet$RNA_snn_res.0.4 <- NULL
+TBB184.singlet$seurat_clusters <- NULL
+TBB184.singlet$annotation <- NULL
+TBB184.singlet$pANN_0.25_0.16_1366 <- NULL
+TBB184.singlet$pANN_0.25_0.13_1366 <- NULL
+TBB184.singlet$pANN_0.25_0.02_1366 <- NULL
+TBB184.singlet$DF.classifications_0.25_0.16_1366 <- NULL
+TBB184.singlet$DF.classifications_0.25_0.16_1054 <- NULL
+TBB184.singlet$DF.classifications_0.25_0.13_1366 <- NULL
+TBB184.singlet$DF.classifications_0.25_0.13_1054 <- NULL
+TBB184.singlet$DF.classifications_0.25_0.02_1366 <- NULL
+TBB184.singlet$DF.classifications_0.25_0.02_1054 <- NULL
+#TBB184.singlet$DF_hi.lo<- NULL
+
+#Save Seurat object
+saveRDS(TBB184.singlet, file = paste0(out.path, "TBB184_singlet.rds"))
+```

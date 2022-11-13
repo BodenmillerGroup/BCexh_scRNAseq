@@ -1,0 +1,532 @@
+---
+title: "Fig5_TM_SCSR"
+author: "Sandra Tietscher"
+date: "6/2/2020"
+output: html_document
+---
+
+# Load packages and data
+
+```{r}
+library(Seurat)
+library(ggrepel)
+library(data.table)
+library(SingleCellSignalR)
+library(pheatmap)
+library(tidyr)
+library(viridis)
+library(igraph)
+library(RColorBrewer)
+library(patchwork)
+
+in.path = "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+out.path = "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/SCSR/TM_clusters/"
+
+all.Tcell <- readRDS(file=paste0(in.path, 'TNK_cells/regressed_mito-krt-MGP/run1_Tcell_15dim.rds'))
+all.Tcell$metacluster <- sub("unassigned", "T_mixed", all.Tcell$metacluster)
+all.Tcell$metacluster <- sub("NK_activated", "NK", all.Tcell$metacluster)
+
+all.myeloid <- readRDS(file= paste0(in.path, "myeloid/myeloid_excl_cl9.rds"))
+
+#Merge datasets
+complete.TM <- merge(all.Tcell, all.myeloid)
+
+#Remove proliferating cells
+Idents(complete.TM) <- complete.TM$metacluster
+TM.small <- subset(x=complete.TM, idents = c("proliferating", "Proliferating"), invert=TRUE)
+TM.small$metacluster <- as.factor(TM.small$metacluster)
+```
+
+#Run SCSR on main cell types (for paracrine and autocrine interactions)
+
+```{r}
+
+#prepare data
+cluster = as.numeric(TM.small$metacluster)
+c.names = levels(TM.small$metacluster)
+data = data.frame(TM.small[["RNA"]]@data)
+
+dir <- "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/SCSR/Fig5_TM/"
+
+#################
+### paracrine ###
+#################
+
+##Calculate LR scores for each cell type combination
+#Set s.score to 0 in order to get the score for each LR pair that is present (whether "significant" or not)
+#Tolerance for autocrine/paracrine was set to 100%
+setwd(dir)
+signal.para <- cell_signaling(data, genes = rownames(data), cluster, int.type = "paracrine", c.names = c.names, s.score = 0.0, logFC = NULL,  species = "homo sapiens", tol = 1, write = TRUE, verbose = TRUE)
+
+### assemble "cell pair x LR pair" data frame ###
+signal.para <- lapply(signal.para, function(x) unique(x))
+signal.para <- lapply(signal.para, function(x) {rownames(x) <- paste0(x[,1], "_", x[,2]);x})
+signal.para <- lapply(signal.para, function(x) {x$LR <- paste0(x[,1], "_", x[,2]);x})
+signal.simple <- lapply(signal.para, function(x) x[,-c(1:3)])
+#pull everything together in one matrix per sample (cluster_pairs x LR_pairs)
+signal.simple <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), signal.simple)
+colnames(signal.simple) <- c("LR", names(signal.para))
+signal.simple[is.na(signal.simple)] <- 0
+
+#write out as csv
+write.csv(signal.simple, file=paste0(dir, "/TM_LR_matrix_paracrine.csv"), row.names = FALSE)
+
+#################
+### autocrine ###
+#################
+
+#Tolerance for autocrine/paracrine was set to 0%
+setwd(dir)
+signal.auto <- cell_signaling(data, genes = rownames(data), cluster, int.type = "autocrine", c.names = c.names, s.score = 0.0, logFC = NULL,  species = "homo sapiens", tol = 0, write = TRUE, verbose = TRUE)
+
+### assemble "cell pair x LR pair" data frame ###
+
+signal.auto <- lapply(signal.auto, function(x) unique(x))
+signal.auto <- lapply(signal.auto, function(x) {rownames(x) <- paste0(x[,1], "_", x[,2]);x})
+signal.auto <- lapply(signal.auto, function(x) {x$LR <- paste0(x[,1], "_", x[,2]);x})
+signal.simple <- lapply(signal.auto, function(x) x[,-c(1:3)])
+#pull everything together in one matrix per sample (cluster_pairs x LR_pairs)
+signal.simple <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), signal.simple)
+colnames(signal.simple) <- c("LR", names(signal.auto))
+signal.simple[is.na(signal.simple)] <- 0
+
+### subset only autocrine pairs ###
+signal.simple <- signal.simple[,c(1,2,18, 34, 50, 66, 82, 98, 114, 130, 146, 162, 178, 194, 210, 226)]
+
+#write out as csv
+write.csv(signal.simple, file=paste0(dir, "/TM_LR_matrix_autocrine.csv"), row.names = FALSE)
+```
+
+## Read data back in and merge autocrine and paracrine
+
+```{r}
+dir <- "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/SCSR/Fig5_TM/"
+
+LR_paracrine <- read.csv(file=paste0(dir, "/TM_LR_matrix_paracrine.csv"))
+LR_autocrine <- read.csv(file=paste0(dir, "/TM_LR_matrix_autocrine.csv"))
+LR_full <- merge(LR_paracrine, LR_autocrine, by = "LR", all = TRUE)
+
+## Exclude interaction pairs that are clearly not extracellular/surface: Heat-Shock Proteins, Ubiquitin-related, RPS
+exclude_list <- c("HSP", "UBB", "UBC", "UBA", "RPS", "RPL")
+LR_full <- dplyr::filter(LR_full, !substr(LR, 1, 3) %in% exclude_list)
+
+rownames(LR_full) <- LR_full[,1]
+LR_full <- LR_full[,-1]
+LR_full[is.na(LR_full)] <- 0
+```
+
+# Plot number of significant interactions for each pair
+
+```{r}
+
+#count significant interactions for each (directed) pair
+n.int <- colSums(LR_full >= 0.4)
+#get pair names
+pairs <- as.data.frame(colnames(LR_full))
+pairs <- separate(pairs, col="colnames(LR_full)", into=c("A", "B"), sep="\\.", remove = TRUE)
+#add number of significant interactions
+pairs$interactions <- n.int
+pairs$A <- factor(pairs$A, levels = pairs$A[c(225, 219, 216, 213, 212, 224, 221, 220, 218, 223, 217, 214, 215, 211, 222)])
+pairs$B <- factor(pairs$B, levels = pairs$A[c(225, 219, 216, 213, 212, 224, 221, 220, 218, 223, 217, 214, 215, 211, 222)])
+pairs$type <- readLines(paste0(dir, "/cellpair_type.csv"))
+
+#plot distribution of interactions counts
+p_distr <- ggplot(pairs)+
+  geom_density(aes(interactions))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+p_jitter <- ggplot(pairs)+
+  geom_jitter(aes(x=interactions, y = 0, color = type), height =0.01, width = 0.5)+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+p = p_distr/p_jitter + plot_layout(heights = c(2,1))
+
+#plot heatmap of interaction counts
+p <- ggplot(pairs)+
+  geom_tile(aes(A, B, fill = interactions))+
+  scale_fill_gradientn(colours=viridis(100))+
+  theme(panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))+
+  theme(axis.text.x = element_text(angle=45, hjust=1))+
+  ggtitle("Number of interactions with LRscore >= 0.4")+
+  xlab("Ligand-expressing cell")+
+  ylab("Receptor-expressing cell")
+```
+
+## Find interactions that are most variable between cluster pairs
+
+```{r}
+
+# Subset T->M and M->T interactions, exclude pDC, LC and T-mixed
+pairs_sub <- pairs[pairs$type == "M-T" | pairs$type == "T-M",]
+pairs_sub <- pairs_sub[grep("LC|pDC|T_mixed", x= pairs_sub$A, invert = TRUE),]
+pairs_sub <- pairs_sub[grep("LC|pDC|T_mixed", x= pairs_sub$B, invert = TRUE),]
+pairs_TM <- unite(pairs_sub, "pair", c("A", "B"), sep = ".")$pair
+LR_full <- LR_full[,pairs_TM]
+
+################################
+### Find total most variable ###
+################################
+
+#multiply everything by 1000 to get numbers > 1
+LR_full.adj <- sapply(LR_full, function(x) x*1000)
+#calculate coefficient of variation for each LR pair
+cv=apply(LR_full.adj,1,sd)/apply(LR_full.adj,1,mean)
+
+#sort the original matrix by variation coefficient & kick out every LR pair that scores <0.5 for all cluster pairs
+LR_full.adj = LR_full[order(cv,decreasing = TRUE),]
+LR_full.adj = LR_full.adj[apply(LR_full.adj,1, max)>0.5,]
+
+n = nrow(LR_full.adj)
+pheatmap::pheatmap(LR_full.adj[1:100,], cluster_cols = TRUE)
+
+#save Top100 as csv
+top100 <- rownames(LR_full.adj[1:100,])
+write.csv(top100, file = paste0(dir, "top100_CV.csv"))
+
+
+##############################################################
+### Find most variable among Top100 of each cell type pair ###
+##############################################################
+
+topCV <- function(df, pair, top) {
+  
+  #get 100 highest-scoring interactions of the pair
+  df_sub <- df[,pair]
+  names(df_sub) <- rownames(df)
+  df_sub <- sort(df_sub, decreasing = TRUE)
+  df_sub <- df_sub[1:100]
+  
+  #subset whole df based on this interactions and calculate CV for each
+  df_sub_LR <- df[names(df_sub),]
+  df_sub_LR.adj <- sapply(df_sub_LR, function(x) x*1000)
+  cv=apply(df_sub_LR.adj,1,sd)/apply(df_sub_LR.adj,1,mean)
+  names(cv) <- names(df_sub)
+  
+  #Sort interactions based on CV and write out the Top10
+  cv <- sort(cv, decreasing = TRUE)
+  return(names(cv[1:top]))
+}
+
+#Apply function to every cell type pair
+LR_topCV <- character()
+for (i in colnames(LR_full)) {
+  LR.i <- topCV(LR_full, i, top = 5)
+  LR_topCV <- c(LR_topCV, LR.i)
+}
+
+#Remove duplicates
+LR_topCV <- unique(LR_topCV)
+
+#save as csv
+write.csv(LR_topCV, file = paste0(dir, "top100LR_top5CV.csv"))
+
+#Reorder columns & plot
+#LR_full <- LR_full[,c(21, 1:5, 22, 6:10, 23, 11:15, 24, 16:20, 25)]
+LR_full <- LR_full[,c(8:17, 32:36, 66:70, 44:58, 
+                      1, 18, 25, 37, 59, 
+                      2, 19, 26, 38, 60, 
+                      7, 24, 31, 43, 65,  
+                      3, 20, 27, 39, 61, 
+                      4, 21, 28, 40, 62,
+                      5, 22, 29, 41, 63,
+                      6, 23, 30, 42, 64)]
+pheatmap::pheatmap(LR_full[LR_topCV,], cluster_cols = FALSE, color = viridis(100))
+
+
+#################################################
+### Plot only selected LR and cell type pairs ###
+#################################################
+
+LR_selected <- c("CCL17_CCR8", "CCL17_CCR4", "CCL22_CCR4", "XCL1_XCR1", "XCL2_XCR1", "CCL18_CCR8", "IL21_IL21R", "IL21_IL2RG", "IL12B_IL12RB1", "IL12B_IL12RB2", "CXCL8_CXCR2", "FLT3LG_FLT3", "CD40LG_ITGAM", "CD40LG_CD40", "IL13_IL13RA1", "CXCL11_CXCR3") 
+
+order <- c(grep("CD4_exhausted.", colnames(LR_full)), grep("CD8_exhausted.", colnames(LR_full)), grep("cytotoxic.", colnames(LR_full)), grep("naive.", colnames(LR_full)), grep("NK\\.", colnames(LR_full)), grep("NKT.", colnames(LR_full)), grep("Tregs.", colnames(LR_full)), grep("Monocyte.", colnames(LR_full)), grep("TAM.", colnames(LR_full)), grep("aDC.", colnames(LR_full)), grep("cDC2.", colnames(LR_full)), grep("cDC1.", colnames(LR_full)))
+LR_order <- LR_full[,order]
+cellpair_included <- colnames(LR_order)[grep("LC|pDC|T-mixed", colnames(LR_order), invert = TRUE)]
+
+pheatmap::pheatmap(LR_order[LR_selected, cellpair_included], cluster_cols = FALSE, color = magma(100))
+
+```
+
+# Run for IE1 only
+
+```{r TM-IE1}
+
+#Subset object
+Idents(TM.small) <- TM.small$TIG
+TM.IE1 <- subset(x=TM.small, idents = "TIG2", invert=FALSE)
+
+#prepare data
+cluster = as.numeric(TM.IE1$metacluster)
+c.names = levels(TM.IE1$metacluster)
+data = data.frame(TM.IE1[["RNA"]]@data)
+
+dir <- "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/SCSR/Fig5_TM/IE1/"
+
+#################
+### paracrine ###
+#################
+
+##Calculate LR scores for each cell type combination
+#Set s.score to 0 in order to get the score for each LR pair that is present (whether "significant" or not)
+#Tolerance for autocrine/paracrine was set to 100%
+setwd(dir)
+signal.para <- cell_signaling(data, genes = rownames(data), cluster, int.type = "paracrine", c.names = c.names, s.score = 0.0, logFC = NULL,  species = "homo sapiens", tol = 1, write = TRUE, verbose = TRUE)
+
+### assemble "cell pair x LR pair" data frame ###
+signal.para <- lapply(signal.para, function(x) unique(x))
+signal.para <- lapply(signal.para, function(x) {rownames(x) <- paste0(x[,1], "_", x[,2]);x})
+signal.para <- lapply(signal.para, function(x) {x$LR <- paste0(x[,1], "_", x[,2]);x})
+signal.simple <- lapply(signal.para, function(x) x[,-c(1:3)])
+#pull everything together in one matrix per sample (cluster_pairs x LR_pairs)
+signal.simple <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), signal.simple)
+colnames(signal.simple) <- c("LR", names(signal.para))
+signal.simple[is.na(signal.simple)] <- 0
+
+#write out as csv
+write.csv(signal.simple, file=paste0(dir, "/TM_LR_matrix_paracrine.csv"), row.names = FALSE)
+
+#################
+### autocrine ###
+#################
+
+#Tolerance for autocrine/paracrine was set to 0%
+setwd(dir)
+signal.auto <- cell_signaling(data, genes = rownames(data), cluster, int.type = "autocrine", c.names = c.names, s.score = 0.0, logFC = NULL,  species = "homo sapiens", tol = 0, write = TRUE, verbose = TRUE)
+
+### assemble "cell pair x LR pair" data frame ###
+
+signal.auto <- lapply(signal.auto, function(x) unique(x))
+signal.auto <- lapply(signal.auto, function(x) {rownames(x) <- paste0(x[,1], "_", x[,2]);x})
+signal.auto <- lapply(signal.auto, function(x) {x$LR <- paste0(x[,1], "_", x[,2]);x})
+signal.simple <- lapply(signal.auto, function(x) x[,-c(1:3)])
+#pull everything together in one matrix per sample (cluster_pairs x LR_pairs)
+signal.simple <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), signal.simple)
+colnames(signal.simple) <- c("LR", names(signal.auto))
+signal.simple[is.na(signal.simple)] <- 0
+
+### subset only autocrine pairs ###
+signal.simple <- signal.simple[,c(1,2,18, 34, 50, 66, 82, 98, 114, 130, 146, 162, 178, 194, 210, 226)]
+
+#write out as csv
+write.csv(signal.simple, file=paste0(dir, "/TM_LR_matrix_autocrine.csv"), row.names = FALSE)
+```
+
+
+```{r read-IE1}
+dir <- "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/SCSR/Fig5_TM/IE1/"
+
+LR_paracrine <- read.csv(file=paste0(dir, "/TM_LR_matrix_paracrine.csv"))
+LR_autocrine <- read.csv(file=paste0(dir, "/TM_LR_matrix_autocrine.csv"))
+LR_full <- merge(LR_paracrine, LR_autocrine, by = "LR", all = TRUE)
+
+## Exclude interaction pairs that are clearly not extracellular/surface: Heat-Shock Proteins, Ubiquitin-related, RPS
+exclude_list <- c("HSP", "UBB", "UBC", "UBA", "RPS", "RPL")
+LR_full <- dplyr::filter(LR_full, !substr(LR, 1, 3) %in% exclude_list)
+
+rownames(LR_full) <- LR_full[,1]
+LR_full <- LR_full[,-1]
+LR_full[is.na(LR_full)] <- 0
+```
+
+```{r nint-IE1}
+
+#count significant interactions for each (directed) pair
+n.int <- colSums(LR_full >= 0.4)
+#get pair names
+pairs <- as.data.frame(colnames(LR_full))
+pairs <- separate(pairs, col="colnames(LR_full)", into=c("A", "B"), sep="\\.", remove = TRUE)
+#add number of significant interactions
+pairs$interactions <- n.int
+pairs$A <- factor(pairs$A, levels = pairs$A[c(225, 219, 216, 213, 212, 224, 221, 220, 218, 223, 217, 214, 215, 211, 222)])
+pairs$B <- factor(pairs$B, levels = pairs$A[c(225, 219, 216, 213, 212, 224, 221, 220, 218, 223, 217, 214, 215, 211, 222)])
+pairs$typeA <- ifelse(pairs$A %in% unique(all.Tcell$metacluster), "T", "M")
+pairs$typeB <- ifelse(pairs$B %in% unique(all.Tcell$metacluster), "T", "M")
+pairs$type <- paste(pairs$typeA, pairs$typeB, sep="-")
+
+#plot distribution of interactions counts
+p_distr <- ggplot(pairs)+
+  geom_density(aes(interactions))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+p_jitter <- ggplot(pairs)+
+  geom_jitter(aes(x=interactions, y = 0, color = type), height =0.01, width = 0.5)+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+p = p_distr/p_jitter + plot_layout(heights = c(2,1))
+
+#plot heatmap of interaction counts
+p <- ggplot(pairs)+
+  geom_tile(aes(A, B, fill = interactions))+
+  scale_fill_gradientn(colours=viridis(100))+
+  theme(panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))+
+  theme(axis.text.x = element_text(angle=45, hjust=1))+
+  ggtitle("Number of interactions with LRscore >= 0.4")+
+  xlab("Ligand-expressing cell")+
+  ylab("Receptor-expressing cell")
+
+pairsIE1 <- pairs
+```
+
+
+# Run for IE2 only
+
+```{r TM-IE1}
+
+#Subset object
+Idents(TM.small) <- TM.small$TIG
+TM.IE2 <- subset(x=TM.small, idents = "TIG3", invert=FALSE)
+
+#prepare data
+cluster = as.numeric(TM.IE2$metacluster)
+c.names = levels(TM.IE2$metacluster)
+data = data.frame(TM.IE2[["RNA"]]@data)
+
+dir <- "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/SCSR/Fig5_TM/IE2/"
+
+#################
+### paracrine ###
+#################
+
+##Calculate LR scores for each cell type combination
+#Set s.score to 0 in order to get the score for each LR pair that is present (whether "significant" or not)
+#Tolerance for autocrine/paracrine was set to 100%
+setwd(dir)
+signal.para <- cell_signaling(data, genes = rownames(data), cluster, int.type = "paracrine", c.names = c.names, s.score = 0.0, logFC = NULL,  species = "homo sapiens", tol = 1, write = TRUE, verbose = TRUE)
+
+### assemble "cell pair x LR pair" data frame ###
+signal.para <- lapply(signal.para, function(x) unique(x))
+signal.para <- lapply(signal.para, function(x) {rownames(x) <- paste0(x[,1], "_", x[,2]);x})
+signal.para <- lapply(signal.para, function(x) {x$LR <- paste0(x[,1], "_", x[,2]);x})
+signal.simple <- lapply(signal.para, function(x) x[,-c(1:3)])
+#pull everything together in one matrix per sample (cluster_pairs x LR_pairs)
+signal.simple <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), signal.simple)
+colnames(signal.simple) <- c("LR", names(signal.para))
+signal.simple[is.na(signal.simple)] <- 0
+
+#write out as csv
+write.csv(signal.simple, file=paste0(dir, "/TM_LR_matrix_paracrine.csv"), row.names = FALSE)
+
+#################
+### autocrine ###
+#################
+
+#Tolerance for autocrine/paracrine was set to 0%
+setwd(dir)
+signal.auto <- cell_signaling(data, genes = rownames(data), cluster, int.type = "autocrine", c.names = c.names, s.score = 0.0, logFC = NULL,  species = "homo sapiens", tol = 0, write = TRUE, verbose = TRUE)
+
+### assemble "cell pair x LR pair" data frame ###
+
+signal.auto <- lapply(signal.auto, function(x) unique(x))
+signal.auto <- lapply(signal.auto, function(x) {rownames(x) <- paste0(x[,1], "_", x[,2]);x})
+signal.auto <- lapply(signal.auto, function(x) {x$LR <- paste0(x[,1], "_", x[,2]);x})
+signal.simple <- lapply(signal.auto, function(x) x[,-c(1:3)])
+#pull everything together in one matrix per sample (cluster_pairs x LR_pairs)
+signal.simple <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), signal.simple)
+colnames(signal.simple) <- c("LR", names(signal.auto))
+signal.simple[is.na(signal.simple)] <- 0
+
+### subset only autocrine pairs ###
+signal.simple <- signal.simple[,c(1,2,18, 34, 50, 66, 82, 98, 114, 130, 146, 162, 178, 194, 210, 226)]
+
+#write out as csv
+write.csv(signal.simple, file=paste0(dir, "/TM_LR_matrix_autocrine.csv"), row.names = FALSE)
+```
+
+
+```{r read-IE1}
+dir <- "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/SCSR/Fig5_TM/IE2/"
+
+LR_paracrine <- read.csv(file=paste0(dir, "/TM_LR_matrix_paracrine.csv"))
+LR_autocrine <- read.csv(file=paste0(dir, "/TM_LR_matrix_autocrine.csv"))
+LR_full <- merge(LR_paracrine, LR_autocrine, by = "LR", all = TRUE)
+
+## Exclude interaction pairs that are clearly not extracellular/surface: Heat-Shock Proteins, Ubiquitin-related, RPS
+exclude_list <- c("HSP", "UBB", "UBC", "UBA", "RPS", "RPL")
+LR_full <- dplyr::filter(LR_full, !substr(LR, 1, 3) %in% exclude_list)
+
+rownames(LR_full) <- LR_full[,1]
+LR_full <- LR_full[,-1]
+LR_full[is.na(LR_full)] <- 0
+```
+
+```{r nint-IE1}
+
+#count significant interactions for each (directed) pair
+n.int <- colSums(LR_full >= 0.4)
+#get pair names
+pairs <- as.data.frame(colnames(LR_full))
+pairs <- separate(pairs, col="colnames(LR_full)", into=c("A", "B"), sep="\\.", remove = TRUE)
+#add number of significant interactions
+pairs$interactions <- n.int
+pairs$A <- factor(pairs$A, levels = pairs$A[c(225, 219, 216, 213, 212, 224, 221, 220, 218, 223, 217, 214, 215, 211, 222)])
+pairs$B <- factor(pairs$B, levels = pairs$A[c(225, 219, 216, 213, 212, 224, 221, 220, 218, 223, 217, 214, 215, 211, 222)])
+pairs$typeA <- ifelse(pairs$A %in% unique(all.Tcell$metacluster), "T", "M")
+pairs$typeB <- ifelse(pairs$B %in% unique(all.Tcell$metacluster), "T", "M")
+pairs$type <- paste(pairs$typeA, pairs$typeB, sep="-")
+
+#plot distribution of interactions counts
+p_distr <- ggplot(pairs)+
+  geom_density(aes(interactions))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+p_jitter <- ggplot(pairs)+
+  geom_jitter(aes(x=interactions, y = 0, color = type), height =0.01, width = 0.5)+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+p = p_distr/p_jitter + plot_layout(heights = c(2,1))
+
+#plot heatmap of interaction counts
+p <- ggplot(pairs)+
+  geom_tile(aes(A, B, fill = interactions))+
+  scale_fill_gradientn(colours=viridis(100))+
+  theme(panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))+
+  theme(axis.text.x = element_text(angle=45, hjust=1))+
+  ggtitle("Number of interactions with LRscore >= 0.4")+
+  xlab("Ligand-expressing cell")+
+  ylab("Receptor-expressing cell")
+
+pairsIE2 <- pairs
+```
+
+# Compare IE1 and IE2
+
+```{r}
+# Check whether the "pairs" tables are in the same order
+all.equal(pairsIE1$A, pairsIE2$A)
+all.equal(pairsIE1$B, pairsIE2$B)
+
+colnames(pairsIE1) <- paste0(colnames(pairsIE1), "_IE1")
+colnames(pairsIE2) <- paste0(colnames(pairsIE2), "_IE2")
+
+pairs <- cbind(pairsIE1, pairsIE2)
+pairs$IE1_enrichment <- pairs$interactions_IE1/pairs$interactions_IE2
+
+#plot heatmap of interaction delta
+p <- ggplot(pairs)+
+  geom_tile(aes(A_IE1, B_IE1, fill = IE1_enrichment))+
+  scale_fill_gradient2(low = "blue", mid = "white", high= "red", midpoint = 1)+
+  theme(panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))+
+  theme(axis.text.x = element_text(angle=45, hjust=1))+
+  ggtitle("Fold-enrichment of interactions in IE1")+
+  xlab("Ligand-expressing cell")+
+  ylab("Receptor-expressing cell")
+```
+

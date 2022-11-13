@@ -1,0 +1,208 @@
+---
+title: "Fig1_celltype_freq"
+author: "Sandra Tietscher"
+date: "4/8/2020"
+output: html_document
+---
+
+## Load libraries and data, tidy cell type levels
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(patchwork)
+library(ggpubr)
+
+#path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+path = "Z://sandrat/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/" 
+all.merged <- readRDS(file = paste0(path, "merged_complete_inclCelltype.rds"))
+
+# classify pDCs as myeloid cells for this large overview
+ct_levels <- levels(all.merged$cell.type)
+ct_levels[7] <- "mast cell/basophil"
+ct_levels[9] <- "myeloid"
+levels(all.merged$cell.type) <- ct_levels
+
+## reorder cell type levels
+old.levels <- levels(all.merged$cell.type)
+all.merged$cell.type <- factor(all.merged$cell.type, levels =  old.levels[c(6,4,3,1,2,5,7,8)])
+Idents(all.merged) <- all.merged$cell.type
+```
+
+## Full cluster by sample plot
+
+```{r}
+new.levels <- as.character(read.csv(paste0(path, "cluster_celltypes_res2_v2.csv"))[,1])
+
+cluster.prop <- as.data.table(prop.table(x=table(all.merged$orig.ident,all.merged$SCT_snn_res.2), margin=2))
+colnames(cluster.prop) <- c("sample", "cluster", "proportion")
+cluster.prop$cluster <- factor(cluster.prop$cluster, levels = new.levels)
+sample.levels <- levels(factor(cluster.prop$sample))
+cluster.prop$sample <- factor(cluster.prop$sample, levels = sample.levels[c(1,5:9,14,2:4,10:13)])
+
+p <- ggplot(cluster.prop, aes(cluster, y = proportion, fill=sample)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank(), axis.ticks.x = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank(), axis.text.x = element_text(angle = 90, hjust=1))+
+  ggtitle('Sample composition by cell type')
+```
+
+
+## Display and compare cell type frequencies
+
+```{r}
+## Display cell type frequencies in stacked barplot
+
+#absolute frequency
+celltype.freq <- as.data.table(table(all.merged$cell.type, all.merged$orig.ident))
+colnames(celltype.freq) <- c("cell.type", "sample", "cell.number")
+celltype.freq$cell.type <- factor(x = celltype.freq$cell.type, levels = levels(all.merged$cell.type))
+
+p <- ggplot(celltype.freq, aes(sample, y = cell.number, fill=cell.type)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank(), axis.ticks.x = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank(), axis.text.x = element_text(angle = 90, hjust=1))+
+  ggtitle('Sample composition by cell type (absolute)')
+
+pdf(paste0(out.path, "Fig1_freq_absolute_stacked_barplot.pdf"), width = 10, height = 4.2)
+p
+dev.off()
+
+
+#relative frequency
+celltype.prop <- as.data.table(prop.table(x=table(all.merged$cell.type, all.merged$orig.ident), margin=2))
+colnames(celltype.prop) <- c("cell.type", "sample", "proportion")
+celltype.prop$cell.type <- factor(x = celltype.prop$cell.type, levels = levels(all.merged$cell.type))
+p <- ggplot(celltype.prop, aes(sample, y = proportion, fill=cell.type)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank(), axis.ticks.x = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank(), axis.text.x = element_text(angle = 90, hjust=1))+
+  ggtitle('Sample composition by cell type')
+
+pdf(paste0(out.path, "Fig1_freq_stacked_barplot.pdf"), width = 10, height = 4.2)
+p
+dev.off()
+
+
+## Display cell type proportions by TIG ##
+celltype.prop$TIG <- ifelse(celltype.prop$sample == "TBB129" | celltype.prop$sample  == "TBB171" | celltype.prop$sample  == "TBB111" | celltype.prop$sample == "TBB165" | celltype.prop$sample  == "TBB338" | celltype.prop$sample  == "TBB184" | celltype.prop$sample  == "TBB011", "TIG2", "TIG3")
+
+# Calculate Wilcoxon Test
+tdat <- celltype.prop
+pvalues <- tdat %>% 
+  group_by(cell.type) %>% 
+  summarise(p=wilcox.test(proportion~TIG)$p.value)
+tdat <- merge(tdat, pvalues, by.x = "cell.type", by.y ="cell.type", all.x = TRUE)
+tdat$p.wt <- paste0('p=',round(tdat$p, digits=3))
+
+#Boxplots 
+p = ggplot(tdat, aes(x= TIG, y = proportion, color=TIG))+
+  geom_boxplot()+
+  geom_point()+
+  facet_wrap(~cell.type, scales="fixed", ncol=8, strip.position="top")+
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x=element_text(angle = 90, hjust=1),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        strip.background = element_blank(),
+        legend.background = element_blank())+
+  ylab("Of total [%]")+
+  stat_compare_means(method = "wilcox.test", aes(label=..p.signif..), label.y = 0.6)
+
+pdf(paste0(out.path, "Fig1_freq_boxplots_wilcoxon.pdf"), width = 10, height = 3)
+p
+dev.off()
+```
+
+### Celltype direct comparison (Cytof & 10x)
+
+```{r}
+## Cell type percentages
+RNA_perc <- celltype.prop
+RNA_perc$method <- "10x"
+cytof_perc <- read.csv(file=paste0(path, "cytof_celltype_prop.csv"))
+levels(cytof_perc$cell.type)[6] <- "mast cell/basophil"
+
+#merge myeloid and dendritic cells -> myeloid
+cytof.myeloid <- cytof_perc[7, 2:13] + cytof_perc[8, 2:13]
+cytof.myeloid$cell.type <- "myeloid"
+cytof_perc <- rbind(cytof_perc[c(1:6, 9, 10),], cytof.myeloid)
+
+cytof_perc_gat <- gather(cytof_perc, key = "sample", value="proportion", "TBB075":"TBB212")
+cytof_perc_gat$method <- "cytof"
+
+#combine cytof and 10x percentages
+RNA_perc$TIG <- NULL
+celltype.perc <- rbind(cytof_perc_gat, RNA_perc)
+celltype.perc$cell.type <- factor(celltype.perc$cell.type, levels=c(levels(all.merged$cell.type), "other"))
+celltype.perc$method <- factor(celltype.perc$method, levels=c("cytof", "10x"))
+celltype.perc.8samples <- celltype.perc[!(celltype.perc$sample == "TBB330" | celltype.perc$sample == "TBB338"),]
+celltype.perc.8samples <- na.omit(celltype.perc.8samples)
+
+#Stacked barplots
+p = ggplot(celltype.perc.8samples, aes(method, y = proportion, fill=cell.type)) +
+  geom_bar(stat="identity")+
+  facet_wrap(~sample, ncol=6)+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x=element_text(angle = 90, hjust=1),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        legend.background = element_blank())+
+  ylab("Of total [%]")+
+  ggtitle('Celltype percentages: CyTOF vs. scRNA-seq')
+
+pdf(paste0(out.path, "Fig1_S_cytof_vs_10x.pdf"), width = 8, height = 5)
+p
+dev.off()
+
+#Paired boxplots
+#add line for "other" also for 10x data
+other.df <- celltype.perc.8samples %>% filter(cell.type == "other")
+other.df$proportion <- 0
+other.df$method <- "10x"
+celltype.perc.8samples <- rbind(celltype.perc.8samples, other.df)
+
+p_paired <- ggplot(celltype.perc.8samples, aes(x = method, y = proportion)) +
+  geom_line(aes(group = sample, color = sample))+
+  facet_wrap(~cell.type, scales = "free", ncol = 5)+
+  theme(axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        legend.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1))
+
+pdf(paste0(out.path, "Fig1_S_cytof_vs_10x_paired_color.pdf"), width = 9, height = 4)
+p_paired
+dev.off()
+```
+
+## Cell numbers before and after filtering
+
+```{r}
+cellnumbers <- read.csv(paste0(path, "CellsPerSample_PrePostFilter.csv"))[-15,-4]
+cellnumbers$preFilter <- cellnumbers$preFilter - cellnumbers$postFilter
+cellnumbers <- gather(cellnumbers, key = "filter", value = "cell_number", 2:3)
+cellnumbers$filter <- factor(cellnumbers$filter, levels = c("preFilter", "postFilter"))
+
+p <- ggplot(cellnumbers, aes(Sample, cell_number, fill = filter))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values = c("preFilter" = "dodgerblue", "postFilter" = "green4"))+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x=element_text(angle = 90, hjust=1),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        legend.background = element_blank())+
+  ylab("Cell number")
+```
+

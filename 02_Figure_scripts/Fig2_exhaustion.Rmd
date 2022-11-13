@@ -1,0 +1,240 @@
+---
+title: "Fig2_exhaustion"
+author: "Sandra Tietscher"
+date: "4/20/2020"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(magrittr)
+library(viridis)
+library(patchwork)
+library(ComplexHeatmap)
+library(ggrepel)
+library(ggpubr)
+
+in.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/Fig2/" 
+all.Tcell <- readRDS(file=paste0(in.path, 'run1_Tcell_15dim.rds'))
+```
+
+## Correlation plots: cell types
+
+```{r}
+metacluster.sample.prop <- prop.table(x=table(all.Tcell$metacluster, all.Tcell$orig.ident), margin=2)
+ex.sample.prop <- as.data.frame(metacluster.sample.prop[c(7,9),])
+ex.sample.prop <- spread(ex.sample.prop, "Var1", "Freq")
+colnames(ex.sample.prop) <- c("sample", "CD4_exhausted", "CD8_exhausted")
+ex.sample.prop$TIG <- c("TIG2", "TIG3", "TIG3","TIG3","TIG2","TIG2","TIG2","TIG2", "TIG2", "TIG3", "TIG3", "TIG3", "TIG3", "TIG2")
+ex.sample.prop$proliferating <- metacluster.sample.prop[10,]
+
+celltype.freq <- t(read.csv("~/Code/10x/10x_all_Run2_Pilot_comb/output/celltype_samples_proportions.csv"))
+ex.sample.prop$B_cell <- as.numeric(celltype.freq[2:15, 5])
+ex.sample.prop$PC <- as.numeric(celltype.freq[2:15, 8])
+
+p = ggplot(ex.sample.prop, aes(x=PC, y=CD4_exhausted))+
+  geom_point(aes(color=TIG), size = 2)+
+  #geom_text_repel(label=ex.sample.prop$sample, aes(color=TIG))+
+  geom_smooth(method = lm, se =FALSE, color = "black")+
+  stat_cor(method="spearman")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none")+
+  ylab("Tfh proportion (of T/NK)")+
+  xlab("Plasma cell proportion (of total)")
+
+```
+
+## CXCL13 expression
+
+```{r}
+#Subset to very few cells to get small pdfs (for vectorized legends)
+cells <- WhichCells(all.Tcell)
+cells.sub <- sample(cells, 100)
+object <- subset(all.Tcell, cells = cells.sub)
+p <- FeaturePlot(all.Tcell, c("PDCD1", "CXCL13"), blend = TRUE, blend.threshold = 0.05)
+p <- FeaturePlot(all.Tcell, c("PDCD1", "CXCL13"))
+
+## Calculate cluster averages
+Idents(all.Tcell) <- all.Tcell$cluster
+cluster.averages.table <- AverageExpression(object = all.Tcell, return.seurat = FALSE, assays = "RNA")
+RNA.average <- as.matrix(cluster.averages.table[[1]])
+
+avg <- as.data.frame(t(RNA.average[c("PDCD1", "CXCL13"),]))
+p = ggplot(avg, aes(x=PDCD1, y=CXCL13))+
+  geom_point(size = 2)+
+  #geom_text_repel(label=rownames(avg))+
+  geom_smooth(method = lm, se =FALSE, color = "black")+
+  stat_cor(method="spearman")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none")
+
+#Barplots
+avg$cluster <- rownames(avg)
+avg <- gather(avg, key = "gene", value = "mean_counts", 1:2)
+avg$cluster <- factor(avg$cluster, levels = avg$cluster[1:19])
+
+p <- ggplot(avg, aes(cluster, mean_counts))+
+  geom_col(aes(fill=gene))+
+  facet_wrap(~gene, scales = "free", ncol = 1, strip.position = "right")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none",
+        axis.text.x = element_text(angle = 90, hjust=1))
+
+## Calculate sample averages
+Idents(all.Tcell) <- all.Tcell$orig.ident
+sample.averages.table <- AverageExpression(object = all.Tcell, return.seurat = FALSE, assays = "RNA")
+RNA.average.sample <- as.matrix(sample.averages.table[[1]])
+
+savg <- as.data.frame(t(RNA.average.sample[c("PDCD1", "CXCL13"),]))
+savg$sample <- rownames(savg)
+savg <- setorder(savg, sample)
+savg$TIG <- c("TIG2", "TIG3", "TIG3","TIG3","TIG2","TIG2","TIG2","TIG2", "TIG2", "TIG3", "TIG3", "TIG3", "TIG3", "TIG2")
+p = ggplot(savg, aes(x=PDCD1, y=CXCL13))+
+  geom_point(size = 2, aes(color=TIG))+
+  geom_text_repel(label=savg$sample)+
+  geom_smooth(method = lm, se =FALSE, color = "black")+
+  stat_cor(method="spearman")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none")
+```
+
+## Subset CD8+ and naive T cells for heatmap
+
+```{r}
+Idents(all.Tcell) <- all.Tcell$metacluster
+CD8 <- subset(all.Tcell, idents = c("cytotoxic", "CD8_exhausted", "naive"))
+Idents(all.Tcell) <- all.Tcell$cluster
+CD8.sub <- subset(all.Tcell, idents = c("T-naive", "T-cytotoxic-1", "T-cytotoxic-2", "T-cytotoxic-3", "T-cytotoxic-4", "T-CD8-exhausted"), downsample = 100)
+
+tumor_reactive = c("PDCD1", "LAG3", "HAVCR2", "CTLA4", "TNFRSF9", "TNFRSF18", "ENTPD1", "ITGAE", "CXCL13", "TCF7")
+
+#single cell heatmap
+Idents(CD8) <- CD8$cluster
+p = DoHeatmap(subset(CD8, downsample=100), features = tumor_reactive, size = 3, draw.lines = TRUE, slot = "data", disp.max = 2, lines.width = 5)+
+  scale_fill_viridis_c(na.value = "white")
+
+
+## single cell heatmap with cells ordered by rank-sum
+
+ranked100 <- function(object, cluster, genes) {
+  Idents(object) <- object$cluster
+  obj.sub <- subset(object, idents = cluster, downsample = 100)
+  counts <- as.data.frame(t(as.matrix(obj.sub@assays[["RNA"]]@counts[genes,])))
+  counts$sum <- rowSums(counts)
+  counts$cell <- rownames(counts)
+  setorder(counts, sum)
+  counts$cluster <- cluster
+  return(counts)
+}
+
+ranked <- ranked100(CD8, "T-naive", tumor_reactive)
+for (i in c("T-cytotoxic-1", "T-cytotoxic-2", "T-cytotoxic-3", "T-cytotoxic-4", "T-CD8-exhausted")) {
+  counts <- ranked100(CD8, i, tumor_reactive)
+  ranked <- rbind(ranked, counts)
+}
+
+ranked_t <- t(ranked[,1:10])
+col_split <- factor(ranked$cluster)
+col_split <- factor(col_split, levels = levels(col_split)[c(6, 2:5, 1)])
+heatmap_colors <- colorRamp2(seq(0, 3, length = 100), viridis(100))
+
+p = Heatmap(ranked_t, show_row_names = TRUE, heatmap_legend_param = list(title = "Counts"), col=heatmap_colors, cluster_rows = FALSE, cluster_columns=FALSE, row_names_side = "left", show_column_names = FALSE, row_names_gp = gpar(fontsize = 6), cluster_column_slices = FALSE, column_split = col_split)     
+
+
+```
+
+## Proliferating cells: expression of exhaustion markers
+
+```{r}
+## assign proliferation status
+prol <- rep("non-proliferating", 19)
+prol[14] <- "proliferating"
+names(prol) <- levels(all.Tcell$cluster)
+Idents(all.Tcell) <- all.Tcell$cluster
+all.Tcell <- RenameIdents(all.Tcell, prol)
+all.Tcell[["proliferation_status"]] <- Idents(all.Tcell)
+table(all.Tcell$proliferation_status)
+
+### Heatmap with log-fold change of average gene expression ###
+prol.averages.table <- AverageExpression(object = all.Tcell, return.seurat = FALSE, assays = "RNA")
+RNA.average <- as.matrix(prol.averages.table[[1]])
+RNA.average.df <- as.data.frame(RNA.average[tumor_reactive,])
+RNA.average.df$logFC <- log(RNA.average.df$proliferating / RNA.average.df$`non-proliferating`)
+RNA.average.df$gene <- rownames(RNA.average.df)
+RNA.average.df$gene <- factor(RNA.average.df$gene, levels = rev(tumor_reactive))
+
+#Heatmap
+p <- ggplot(RNA.average.df, aes(gene, "log FC", fill = logFC))+
+  geom_tile()+
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0)+
+  labs(fill = "Log Fold Change", title = "Change in average gene expression\n(proliferating vs non-proliferati)")+
+  theme(axis.title.y = element_blank(), 
+        axis.text.x = element_text(angle = 90, hjust=1), 
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "bottom")+
+  coord_flip()
+```
+
+## PD1: CyTOF vs 10x
+
+```{r}
+#Cytof percentages
+cytof.CD8ex <- read.csv("~/Code/10x/10x_all_Run2_Pilot_comb/output/exhausted_cytof_perc.csv")
+
+#Count percentage of PDCD1+ cells per sample
+Cell.nr <- table(all.Tcell$orig.ident)
+PDCD1 <- subset(x=all.Tcell, subset = PDCD1>0)
+Cell.nr.PDCD1 <- table(PDCD1$orig.ident)
+PDCD1.perc <- merge(Cell.nr, Cell.nr.PDCD1, by=0)
+PDCD1.perc$Row.names<-NULL
+PDCD1.perc$percent <- PDCD1.perc$Freq.y / PDCD1.perc$Freq.x 
+PDCD1.perc <- setorder(PDCD1.perc, Var1.x)
+PDCD1.perc$TIG <- c("TIG2", "TIG3", "TIG3","TIG3","TIG2","TIG2","TIG2","TIG2", "TIG2", "TIG3", "TIG3", "TIG3", "TIG3", "TIG2")
+
+#Plot vs CyTOF cluster percentages (all PD-1 expressing clusters)
+PDCD1.perc[,2:4] <- NULL
+colnames(PDCD1.perc) <- c("sample", "PDCD1_10x", "TIG")
+PD1 <- merge(cytof.CD8ex, PDCD1.perc, by="sample")
+
+p = ggplot(PD1, aes(x=total_Tex_cytof, y=PDCD1_10x))+
+  geom_point(size = 2, aes(color=TIG))+
+  geom_smooth(method = lm, se =FALSE, color = "black")+
+  stat_cor(method="spearman")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none")+
+  ylab("10x: Frequency of PDCD1-expressing cells")+
+  xlab("CyTOF: Frequency of cells in PD1-high clusters")
+  
+```
+
+
+
+
+
+

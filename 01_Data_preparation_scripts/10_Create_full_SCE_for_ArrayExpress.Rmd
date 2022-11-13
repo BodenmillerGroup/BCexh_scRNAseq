@@ -1,0 +1,152 @@
+---
+title: "Create_full_SCE"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+
+in.path = "~/home/Code/10x/DoubletFinder/output/"
+out.path = "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+
+```
+
+## Load full object (before and after filtering)
+
+```{r}
+pre.filter <- readRDS (file = paste0(out.path, "complete_merged_preFilter.rds"))
+pre.filter$cellID <- str_replace(colnames(pre.filter), ".*TBB", "TBB")
+post.filter <- readRDS(file = paste0(out.path, "merged_complete_inclCelltype.rds"))
+post.filter$cellID <- str_replace(colnames(post.filter), ".*TBB", "TBB")
+cells.not.included <- setdiff(colnames(pre.filter), colnames(post.filter))
+```
+
+## Add T cell cluster and metacluster
+
+```{r}
+all.Tcell <- readRDS('~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/run1_Tcell_15dim.rds')
+all.Tcell$cellID <- str_replace(colnames(all.Tcell), ".*TBB", "TBB")
+
+#Prepare metadata
+full <- data.frame(cellID = WhichCells(post.filter, cells = colnames(all.Tcell), invert = TRUE), Tcell.cluster = "none", Tcell.metacluster = "none")
+sub <- data.frame(cellID = colnames(all.Tcell), Tcell.cluster = all.Tcell$cluster, Tcell.metacluster =  all.Tcell$metacluster)
+merged <- rbind(full, sub)
+rownames(merged) <- merged$cellID
+
+#Add to object
+post.filter <- AddMetaData(post.filter, merged)
+
+#Check
+table(post.filter$cell.type, post.filter$Tcell.cluster)
+table(post.filter$cell.type, post.filter$Tcell.metacluster)
+
+```
+
+## Add Myeloid cell cluster and metacluster
+
+```{r}
+all.myeloid <- readRDS("~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/myeloid/myeloid_excl_cl9.rds")
+all.myeloid$cellID <- str_replace(colnames(all.myeloid), ".*TBB", "TBB")
+
+#Prepare metadata
+full <- data.frame(cellID = WhichCells(post.filter, cells = colnames(all.myeloid), invert = TRUE), myeloid.cluster = "none", myeloid.metacluster = "none")
+sub <- data.frame(cellID = colnames(all.myeloid), myeloid.cluster = all.myeloid$cluster, myeloid.metacluster =  all.myeloid$metacluster)
+merged <- rbind(full, sub)
+rownames(merged) <- merged$cellID
+
+#Add to object
+post.filter <- AddMetaData(post.filter, merged)
+
+#Check
+table(post.filter$cell.type, post.filter$myeloid.cluster)
+table(post.filter$cell.type, post.filter$myeloid.metacluster)
+```
+
+## Create metadata tables
+
+```{r}
+# For included cells
+df.included <- data.frame(cellID = post.filter$cellID,
+                          sample = post.filter$orig.ident,
+                          IE = post.filter$TIG,
+                          excl_doublet = FALSE,
+                          excl_QC = FALSE,
+                          cell_type = post.filter$cell.type,
+                          Tcell_cluster = post.filter$Tcell.cluster,
+                          Tcell_metacluster = post.filter$Tcell.metacluster,
+                          myeloid_cluster = post.filter$myeloid.cluster,
+                          myeloid_metacluster = post.filter$myeloid.metacluster)
+
+# For excluded cells
+excl <- subset(pre.filter, cells = cells.not.included)
+df.excluded <- data.frame(cellID = excl$cellID,
+                          sample = excl$orig.ident,
+                          IE = excl$TIG,
+                          excl_doublet = FALSE,
+                          excl_QC = TRUE,
+                          cell_type = NA,
+                          Tcell_cluster = NA,
+                          Tcell_metacluster = NA,
+                          myeloid_cluster = NA,
+                          myeloid_metacluster = NA)
+
+df.merged <- rbind(df.included, df.excluded)
+```
+
+## Add cells that were excluded as doublets
+
+```{r}
+in.path <- "~/home/Data/Sequencing_data/10x_read_matrices/"
+doublets <- vector()
+
+for (i in unique(pre.filter$orig.ident)) {
+  data <- Read10X(paste0(in.path, i))
+  write.table(data, paste0("~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/single_cell_metadata/", i, "_singlecell_count_matrix.txt"), sep = "\t")
+  seuratobj <- CreateSeuratObject(counts = data, min.cells = 5, min.features = 200, project = i)
+  cellID <- paste(seuratobj$orig.ident, sapply(strsplit(colnames(seuratobj), "-"), `[`, 1), sep = "_")
+  doublets <- c(doublets, cellID[!(cellID %in% df.merged$cellID)])
+}
+
+df.doublets <- data.frame(cellID = doublets,
+                          sample = str_replace(doublets, "_.*", ""),
+                          excl_doublet = TRUE,
+                          excl_QC = FALSE,
+                          cell_type = NA,
+                          Tcell_cluster = NA,
+                          Tcell_metacluster = NA,
+                          myeloid_cluster = NA,
+                          myeloid_metacluster = NA)
+
+df.doublets$IE <- ifelse(df.doublets$sample %in% c("TBB011", "TBB111", "TBB129", "TBB165", "TBB171", "TBB184", "TBB338"), "TIG2", "TIG3")
+
+df.merged <- rbind(df.merged, df.doublets)
+df.merged$IE <- ifelse(df.merged$IE == "TIG2", "IE1", "IE2")
+
+```
+
+## Write out as csv
+
+```{r}
+write.csv(df.merged, "~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/complete_singlecell_metadata.csv", row.names = FALSE)
+```
+
+## Write out as txt file for each sample separately
+
+```{r}
+for (i in unique(df.merged$sample)) {
+  df.sub <- filter(df.merged, sample == i)
+  write.table(df.sub, paste0("~/home/Code/10x/10x_Run1_Run2_Pilot_comb/output/single_cell_metadata/", i, "_complete_singlecell_metadata.txt"), row.names = FALSE, sep = "\t")
+}
+```
+
+
+
+
+
+
+

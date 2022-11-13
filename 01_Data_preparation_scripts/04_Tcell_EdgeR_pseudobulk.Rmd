@@ -1,0 +1,85 @@
+---
+title: "Tcell_EdgeR"
+author: "SandraTietscher"
+date: "2019 M11 18"
+output: html_document
+---
+
+## Load libraries
+
+```{r}
+#library(biomaRt)
+library(data.table)
+library(ggplot2)
+library(RColorBrewer)
+library(dplyr)
+library(edgeR)
+```
+## Reading in the data
+
+```{r}
+in_dir = "Y://Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/pseudobulk/sample_sum_counts.csv"
+out_dir = "Y://Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/pseudobulk/"
+cts <- read.csv(in_dir, row.names="X")
+```
+
+## preparing a DGEList object
+
+```{r}
+## read in table with column data
+#coldata <- read.csv(paste0(out_dir, "EdgeR_coldata_for_samplesums.csv"), row.names = 1)
+clinical_data <- read.csv("Y://Code/10x/10x_Run1_Run2_Pilot_comb/output/clinical_data.csv")
+
+obj <- DGEList(counts=cts, group=clinical_data$IE, samples = clinical_data)
+obj$samples
+head(obj$counts)
+
+#filter out lowly expressed genes
+keep <- filterByExpr(obj, group = clinical_data$IE,
+             min.count = 30, min.total.count = 300, large.n = 4, min.prop = 0.6)
+table(keep)
+obj <- obj[keep, , keep.lib.sizes=FALSE]
+
+## Normalisation for RNA composition using TMM (trimmed mean of M-values)
+obj <- calcNormFactors(obj)
+obj$samples
+
+```
+
+## Setting up the model
+
+```{r}
+## Set up the design matrix
+Sample <- factor(clinical_data$Patient_ID)
+IE <- factor(clinical_data$IE)
+IE
+IE <- relevel(IE, "IE2")
+
+design <- model.matrix(~IE)
+
+## Estimate dispersion (estimates common dispersion, trended dispersions and tagwise dispersions in one run)
+obj <- estimateDisp(obj, design)
+plotBCV(obj)
+```
+## Calculate Differential Expression
+
+```{r}
+# exact test (only for single-factor experiments)
+et <- exactTest(obj)
+topTags(et)
+
+# Number of up/downregulated genes at 5% FDR
+summary(decideTests(et))
+
+plotMD(et)
+abline(h=c(-1,1), col ="blue")
+```
+
+
+## Exporting results
+```{r}
+
+write.csv(as.data.frame(topTags(et, n=Inf)), file=paste0(out_dir, "TIG3vsTIG2_EdgeR_samplesums_exactT_filtered.csv"))
+```
+
+

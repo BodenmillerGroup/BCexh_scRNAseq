@@ -1,0 +1,313 @@
+---
+title: "Fig4_aDC"
+author: "Sandra Tietscher"
+date: "5/8/2020"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(magrittr)
+library(viridis)
+library(patchwork)
+library(ggrepel)
+library(ggpubr)
+library(ComplexHeatmap)
+library(slingshot)
+library(SingleCellExperiment)
+library(scales)
+library(tradeSeq)
+library(monocle)
+
+
+# Color palette
+colors <- hue_pal()(50)
+show_col(colors)
+
+in.path = "Z://server_homes/sandrat/Code/10x/10x_Run1_Run2_Pilot_comb/output/myeloid/"
+out.path = "Z://server_homes/sandrat/Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/Fig4/" 
+all.myeloid <- readRDS(file= paste0(in.path, "myeloid_excl_cl9.rds"))
+```
+
+## Gene expression heatmap
+
+```{r}
+T_supp <- c("CD80", "CD86", "IDO1", "CD274", "PDCD1LG2",  "TNFSF10", "HLA-E", "HLA-G", "VTCN1", "FASLG", "IL10", "TGFB1", "TGFB2", "PTGS2", "PTGES", "LGALS9", "CCL22")
+
+aDC_genes <- c("CD274", "PDCD1LG2", "IDO1", "CD80", "CD40", "CCL17", "CCL19", "CCL22", "IL15")
+
+## Calculate cluster averages
+Idents(all.myeloid) <- all.myeloid$cluster
+cluster.averages.table <- AverageExpression(object = all.myeloid, return.seurat = FALSE, assays = "RNA")
+RNA.average <- as.matrix(cluster.averages.table[[1]])
+#Normalize between 0 and 1
+RNA.average.norm <- apply(RNA.average, 1, function(x)(x-min(x))/(max(x)-min(x)))
+RNA.average.znorm <- apply(RNA.average, 1, function(x)(x - mean(x)) / sd(x))
+
+## Plot the heatmap
+col_split <- factor(c(rep("Monocyte",2), rep("TAM",7), rep("DC",5), "M-proliferating"))
+col_split <- factor(col_split, levels = levels(col_split)[c(2,4,1,3)])
+
+p = Heatmap(t(subset(RNA.average.norm, select=aDC_genes)), show_row_names = TRUE, row_dend_side = "left", heatmap_legend_param = list(title = "Normalized\nmean counts"), col=viridis(100), cluster_rows = FALSE, cluster_columns=FALSE, row_names_side = "left", column_names_side = "top", column_names_rot = 90, column_dend_side = "bottom", row_names_gp = gpar(fontsize = 6), cluster_column_slices = FALSE, column_split = col_split)
+```
+
+## FeaturePlots
+
+```{r}
+path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+all.merged <- readRDS(file = paste0(path, "merged_complete_inclCelltype.rds"))
+
+aDC <- WhichCells(all.myeloid, idents = "aDC")
+CD274pos <- WhichCells(all.merged, expression = CD274 > 1.1)
+
+p_aDC_highlight <- DimPlot(all.merged, cells.highlight = aDC, pt.size = 0.1, sizes.highlight = 0.1)
+p_all_CD274 <- FeaturePlot(all.merged, "CD274", max.cutoff = 1.5)
+p_CD274_highlight <- DimPlot(all.merged, cells.highlight = CD274pos, pt.size = 0.01, sizes.highlight = 0.01)
+p <- p_all_highlight / p_all_CD274
+
+png(paste0(out.path, "Fig4_CD274_all.png"), width = 15, height = 20, units = "cm", res = 200)
+p
+dev.off()
+```
+
+# DotPlots
+
+```{r}
+p <- DotPlot(all.myeloid, features = aDC_genes, col.max = 5)+
+  coord_flip()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+
+# Run Slingshot
+
+```{r}
+## Subset DCs
+Idents(all.myeloid) <- all.myeloid$cluster
+DC <- subset(all.myeloid, idents = c("cDC1", "cDC2", "aDC"))
+DC$cluster <- droplevels(DC$cluster)
+
+## re-run PCA and UMAP
+DC <- RunPCA(object = DC, verbose = FALSE)
+DimHeatmap(object = DC, dims = 10:20, cells = 500, balanced = TRUE)
+ElbowPlot(object = DC, ndims =25)
+DC <- RunUMAP(object = DC, dims = 1:14)
+DimPlot(object = DC, reduction = 'umap', group.by = "cluster")
+
+DC.sce <- as.SingleCellExperiment(DC)
+colData(DC.sce)$cluster <- as.character(DC$cluster)
+
+DC.sce  <- slingshot(DC.sce, clusterLabels = 'cluster', reducedDim = 'UMAP', start.clus = "cDC2")
+
+#add pseudotime to Seurat object
+DC$pseudotime <- DC.sce$slingPseudotime_1
+
+#color by cluster
+cluster_col <- DC$cluster
+levels(cluster_col) <- colors[c(34,4,20)]
+cluster_col <- as.character(cluster_col)
+names(cluster_col) <- DC$cluster
+
+plot(reducedDims(DC.sce)$UMAP, col = cluster_col, pch=20, asp = 1, cex = 0.5)
+lines(SlingshotDataSet(DC.sce), lwd=2, type = 'lineages')
+```
+
+
+# Plotting gene expression as a function of pseudotime
+
+```{r}
+
+# exclude cDC1 and two outlier cells from cDC2
+Idents(DC) <- DC$cluster
+DC.sub <- subset(DC, idents = c("cDC2", "aDC"))
+DC.sub <- subset(DC.sub, subset = pseudotime < 20)
+DC.df <- DC.sub@meta.data
+DC.df <- droplevels(DC.df)
+DC.df <- setorder(DC.df, pseudotime)
+DC.df$rank <- c(1:4450)
+
+# genes of interest
+GOI <- c("LAMP3", "CCR7", "BIRC3", "ITGAX", "CD274", "PDCD1LG2", "IDO1", "CD80", "CCL17", "CCL19", "CCL22", "IL15")
+GOI <- factor(GOI, levels = GOI)
+
+### Plot gene expression as a function of pseudotime ###
+exprs <- as.matrix(DC.sub@assays$RNA@counts[GOI,])
+exp.df <- as.data.frame(t(exprs))
+DC.df.exp <- merge(DC.df, exp.df, by = "row.names")
+#order cells by pseudotime
+DC.df.exp <- setorder(DC.df.exp, pseudotime)
+
+
+## Moving averages heatmap (moving average of 11 cells)
+
+#Calculate moving averages (11 cells each)
+DC_rollmean_exp <- as.data.frame(sapply(DC.df.exp[,33:318], function(x) frollmean(x, n = 15, align = "center", na.rm = TRUE)))[-c(1:7, 4444:4450),]
+#Normalize between 0 and 1
+DC_rollmean_exp <- as.data.frame(apply(DC_rollmean_exp, 2, function(x)(x-min(x))/(max(x)-min(x))))
+DC_rollmean_exp$rank <- c(1:4436)
+DC_rollmean_gat <- gather(DC_rollmean_exp, key = "gene", value = "rolling_mean", 1:259)
+DC_rollmean_gat$gene <- as.factor(DC_rollmean_gat$gene)
+DC_rollmean_gat$gene <- factor(DC_rollmean_gat$gene, levels = rev(GOI))
+
+p_heatmap <- ggplot(DC_rollmean_gat, aes(rank, gene, fill = rolling_mean))+
+  geom_tile()+
+  scale_fill_viridis()+
+    theme(panel.background=element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=1))+
+  xlab("Slingshot pseudotime rank")
+
+p_rank <- ggplot(DC.df, aes(rank, "cells", color=cluster))+
+  geom_jitter(alpha = 0.5, size = 0.3)+
+  scale_color_manual(values = colors[c(4, 20)])+
+  theme(panel.background=element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+```
+
+# Find temporally expressed genes
+
+```{r}
+counts <- as.matrix(DC.sub@assays$RNA@counts)
+pseudotime <- as.matrix(DC.sub$pseudotime)
+cellWeights <- as.matrix(rep(1, 4450))
+#icMat <- evaluateK(counts = counts, pseudotime = pseudotime, cellWeights = cellWeights)
+
+set.seed(11)
+#sce.DC <- fitGAM(counts = counts, pseudotime = pseudotime, cellWeights = cellWeights,
+#                nknots = 10, verbose = TRUE)
+#saveRDS(sce.DC, file = paste0(out.path, "tradeSeq_object.rds"))
+sce.DC <- readRDS(file = paste0(out.path, "tradeSeq_object.rds"))
+
+#Test for association of gene expression with pseudotime
+assoRes <- associationTest(sce.DC)
+assoRes <- na.omit(assoRes)
+setorder(assoRes, pvalue)
+head(assoRes)
+
+#Test for differences between lineage start and end
+startRes <- startVsEndTest(sce.DC)
+startRes <- na.omit(startRes)
+setorder(startRes, pvalue)
+
+#Only look at genes that are highly expressed in either cDC2 or aDC
+average_DC <- as.data.frame(RNA.average[, c("aDC", "cDC2")])
+average_DC$max <- apply(average_DC, 1, max)
+average_DC <- filter(average_DC, max >= 0.5)
+genes_high <- rownames(average_DC)
+
+startRes_high <- startRes[genes_high,]
+startRes_high$padj <- p.adjust(startRes_high$pvalue, "bonferroni")
+setorder(startRes_high, padj)
+startRes_high <- filter(startRes_high, padj <= 0.05)
+genes_changing <- rownames(startRes_high)
+
+
+## plot top Genes as heatmap
+
+p = Heatmap(t(DC_rollmean_exp), show_row_names = TRUE, heatmap_legend_param = list(title = "Counts"), col=viridis(100), cluster_rows = TRUE, cluster_columns=FALSE, row_names_side = "left", show_column_names = FALSE, row_names_gp = gpar(fontsize = 6), use_raster = FALSE)  
+```
+
+
+## Plot sample averages
+
+```{r}
+### Plot sample averages ###
+patient.mean <- DC.df %>% 
+  group_by(orig.ident) %>% 
+  summarise(mean = mean(rank))
+colnames(patient.mean) <- c("patient", "mean_pseudotime")
+patient.mean$TIG <- c(rep("TIG2", 7), rep("TIG3", 7))
+
+pos <- position_jitter(height = 0.05, seed = 3)
+p_patient_histo <- ggplot(data = patient.mean, aes(TIG, mean_pseudotime))+
+  geom_boxplot(color= "black")+
+  geom_point(aes(fill = TIG), pch=21, size = 3, color="black", position = pos)+
+    theme(panel.background=element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=1))+
+  #ylim(0,17)+
+  stat_compare_means(method = "wilcox.test", aes(label=..p.format..))+
+  coord_flip()
+
+
+
+#Correlation to Tcell pseudotime
+patient.mean.Tcell <- read.csv("~/Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/pseudotime/ouija/CD8_cytotoxic_new_sub800_6000iter/patient_means.csv")[,1:2]
+colnames(patient.mean.Tcell) <- c("patient", "Tcell_pseudotime")
+
+
+patient.mean.merged <- merge(patient.mean, patient.mean.Tcell, by = "patient")
+
+p = ggplot(patient.mean.merged, aes(x=mean_pseudotime, y=Tcell_pseudotime)) +
+geom_point(aes(color=TIG), size = 2)+
+  stat_cor(method="spearman")+
+  geom_smooth(method = lm, se =FALSE, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        legend.position = "none")+
+  ylab("Mean Tcell pseudotime")+
+  xlab("Mean DC pseudotime")
+```
+
+# Monocle
+
+## Generate CDS for monocle 2
+
+```{r}
+### Prepare input for CDS
+exprs <- GetAssayData(DC[["RNA"]], slot="data")
+cell_metadata <- DC[[c("TIG", "orig.ident", "batch", "percent.mt", "percent.krt", "percent.MGP", "nFeature_RNA", "nCount_RNA", "cluster")]]
+
+#do a little trick to get the gene_annotation file they request for CDS construction
+gene_annotation <- rownames(DC[["RNA"]])
+gene_annotation <- as.data.frame(gene_annotation)
+colnames(gene_annotation) <- "gene_short_name"
+rownames(gene_annotation) <- gene_annotation$gene_short_name
+
+#Set up the object
+pd <- new("AnnotatedDataFrame", data = cell_metadata)
+fd <- new("AnnotatedDataFrame", data = gene_annotation)
+
+TCDS <- newCellDataSet(as(exprs, "sparseMatrix"), phenoData = pd, featureData = fd, expressionFamily=negbinomial.size())
+TCDS <- estimateSizeFactors(TCDS)
+```
+
+## Find differentially expressed genes and build the tree
+
+```{r}
+set.seed(11)
+
+#Calculate differentially expressed genes for each cluster
+Idents(DC) <- DC$cluster
+diff <- FindAllMarkers(DC, only.pos = FALSE, min.pct = 0.15, logfc.threshold = 0.25, assay = "SCT")
+diff_genes <- diff$gene
+
+#set ordering genes
+TCDS <- setOrderingFilter(TCDS, diff_genes)
+#reduce dimensions
+TCDS <- reduceDimension(TCDS, max_components = 2, method = 'DDRTree')
+TCDS <- orderCells(TCDS)
+
+#plot and identify root state
+plot_cell_trajectory(TCDS, color_by = "cluster", cell.size=0.1)+
+  facet_wrap(~cluster, nrow = 1)+
+  scale_color_manual(values = colors[c(34, 4, 20)])
+plot_cell_trajectory(TCDS, color_by = "State")
+
+TCDS <- orderCells(TCDS, root_state = 4)
+plot_cell_trajectory(TCDS, color_by = "Pseudotime")
+
+#Save object
+saveRDS(TCDS, file= paste0(out.path, "DC_Monocle2_3clusters.rds"))
+
+#add pseudotime to Seurat object
+DC$pseudotime_monocle <- TCDS$Pseudotime
+```

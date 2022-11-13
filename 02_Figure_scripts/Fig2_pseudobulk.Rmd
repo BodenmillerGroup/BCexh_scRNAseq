@@ -1,0 +1,136 @@
+---
+title: "Fig2_pseudobulk"
+author: "Sandra Tietscher"
+date: "4/21/2020"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+#library(clustree)
+library(magrittr)
+library(viridis)
+library(ggrepel)
+
+in.path = "Y://Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/"
+out.path = "Y://10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/Fig2/" 
+#all.Tcell <- readRDS(file=paste0(in.path, 'run1_Tcell_15dim.rds'))
+```
+
+## Volcano Plot
+
+```{r}
+#Read EdgeR data
+#edger = read.csv(paste0(in.path, "pseudobulk/Tcell_TIG3vsTIG2_EdgeR_samplesums_exactT.csv"))
+edger = read.csv(paste0(in.path, "pseudobulk/TIG3vsTIG2_EdgeR_samplesums_exactT_filtered.csv"))
+edger$logFC <- -(edger$logFC)
+
+#remove keratins
+edger <- filter(edger, !str_detect(X, "^KRT"))
+edger$X <- as.character(edger$X)
+#remove all genes with logCPM < 1.5
+edger <- filter(edger, logCPM > 1.5)
+
+highlight <- c("HAVCR", "CDK1", "PTMS", "CSF1", "CD55", "GZMB", "PDCD1", "IL13", "MKI67", "TNFRSF18", "CD276", "IRF4", "ITGAE", "CD8B", "TCF7", "PDCD4", "GPR183", "CAMK1", "HAVCR2", "BATF", "TOX", "CCL3", "CXCR6")
+
+edger$color <- as.character(ifelse(edger$FDR < 0.1 & edger$logFC > 0.5, "#F8766D", 
+                      ifelse(edger$FDR < 0.1 & edger$logFC < -0.5, "#00BFC4", "grey")))
+
+#Plot with ggplot
+p1 <- ggplot(edger) +
+  geom_point(aes(logFC, -log(FDR)), color=edger$color)+
+  geom_label_repel(data = subset(edger, X %in% highlight), aes(logFC, -log(FDR), label = X), min.segment.length = 0.1)+
+  geom_vline(xintercept = 0.5, linetype = "dotted", color = "grey20")+
+  geom_vline(xintercept = -0.5, linetype = "dotted", color = "grey20")+
+  geom_hline(yintercept = -log(0.1), linetype = "dotted", color = "grey20")+
+    theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"))
+```
+
+## Volcano Plot with grade-accounted EdgeR output
+
+```{r}
+#Read EdgeR data
+edger = read.csv(paste0(in.path, "pseudobulk/IE1vsIE2_EdgeR_gradecorrection_filtered.csv"))
+
+#remove keratins
+edger <- filter(edger, !str_detect(X, "^KRT"))
+edger$X <- as.character(edger$X)
+#remove all genes with logCPM < 1.5
+edger <- filter(edger, logCPM > 1.5)
+
+#highlight <- c("HAVCR", "CDK1", "PTMS", "CSF1", "CD55", "GZMB", "PDCD1", "IL13", "MKI67", "TNFRSF18", "CD276", "IRF4", "ITGAE", "CD8B", "TCF7", "PDCD4", "GPR183", "CAMK1", "HAVCR2")
+
+edger$color <- as.character(ifelse(edger$FDR < 0.1 & edger$logFC > 0.5, "#F8766D", 
+                      ifelse(edger$FDR < 0.1 & edger$logFC < -0.5, "#00BFC4", "grey")))
+
+#Plot with ggplot
+p1 <- ggplot(edger) +
+  geom_point(aes(logFC, -log(FDR)), color=edger$color)+
+  geom_label_repel(data = subset(edger, X %in% highlight), aes(logFC, -log(FDR), label = X), min.segment.length = 0.1)+
+  geom_vline(xintercept = 0.5, linetype = "dotted", color = "grey20")+
+  geom_vline(xintercept = -0.5, linetype = "dotted", color = "grey20")+
+  geom_hline(yintercept = -log(0.1), linetype = "dotted", color = "grey20")+
+    theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"))
+```
+
+## Boxplots
+
+```{r}
+# load average counts
+in_dir = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/pseudobulk/sample_sum_counts.csv"
+counts <- read.csv(in_dir, row.names="X")
+
+###  setup data table ###
+rawdat = as.data.table(counts)
+#Normalize counts by dividing through library size
+rawdat.cpm <- apply(counts,2, function(x) (x/sum(x))*1000000)
+tdat = t(rawdat.cpm)
+trnames <- row.names(tdat)
+tdat <-as.data.table(tdat)
+colnames(tdat) = rownames(counts)
+tdat[, condition := trnames]
+TIG.list <- c("TIG2", "TIG3", "TIG3", "TIG3", "TIG2", "TIG2", "TIG2", "TIG2", "TIG2", "TIG3", "TIG3","TIG3", "TIG3", "TIG2")  
+tdat[, TIG := TIG.list]
+# format the tables
+dat = melt(tdat, id.vars=c('condition', 'TIG'), variable.name='gene', value.name = 'cpm' , variable.factor = FALSE)
+
+# gene list
+GOI <- c("BATF", "IRF4", "CD55", "CD46",  "CSF1", "IL13", "CCL3", "CXCR6", "TCF7", "TOX")
+
+# plot together with edger values
+edger$gene <- edger$X
+edger$FDR_x = paste0('FDR = ',signif(edger$FDR, digits=3))
+edger$p = paste0('p = ',signif(edger$PValue, digits=2))
+
+p = subset(dat, gene %in% GOI)%>%
+  merge(edger, by='gene')%>%
+  ggplot(aes(x=gene,y=cpm,color=TIG))+
+  facet_wrap(~gene+FDR_x+p, scales = "free", ncol = 3)+
+  geom_boxplot()+
+  geom_point(position = position_jitterdodge(jitter.width = 0, jitter.height = 0, dodge.width = 0.75))+
+  expand_limits(x=0,y=0)+
+  theme_bw()+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"),
+        panel.background = element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        #strip.background = element_blank(),
+        axis.ticks.x=element_blank())
+```
+
+

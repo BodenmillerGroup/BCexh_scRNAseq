@@ -1,0 +1,153 @@
+---
+title: "Fig1_clinical"
+author: "Sandra Tietscher"
+date: "4/8/2020"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(data.table)
+library(patchwork)
+
+path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/" 
+
+df <- read.csv(paste0(path, "subtype_table.csv"))[, -(28:32)]
+```
+
+
+## Age, subtype and grade by TIG
+
+```{r}
+#Subtype distribution by TIG (stacked barplot)
+df$Clinical.Subtype <- factor(x = df$Clinical.Subtype, levels = c("LumA", "LumB", "LumB-HER2", "HER2", "TN"))
+p_type <- ggplot(df, aes(Clinical.Subtype, fill = Tumor.Immune.Group..CyTOF.based.))+
+  geom_bar()+
+  scale_x_discrete(drop=FALSE)+
+  scale_y_continuous(breaks = c(2,4,6,8))+
+   theme(axis.title.x=element_blank(), 
+         axis.title.y = element_blank(),
+         panel.background = element_blank(),
+         panel.border = element_rect(color = "black", fill = "NA"),
+         axis.text.x = element_text(angle = 90, hjust=1),
+         legend.title = element_blank(),
+         axis.ticks.x = element_blank()) +
+  ggtitle('Clinical Subtypes by TIG')
+
+pdf(paste0(out.path, "Fig1_S_subtype_TIG.pdf"), width = 4, height = 4)
+p_type
+dev.off()
+
+
+#Age distribution by TIG (boxplots)
+p_age <- ggplot(df, aes(x = Tumor.Immune.Group..CyTOF.based., y = Age.at.Surgery))+
+  geom_boxplot()+
+  geom_point()+
+   theme(axis.title.x=element_blank(), 
+         axis.title.y = element_blank(),
+         panel.background = element_blank(),
+         panel.border = element_rect(color = "black", fill = "NA"),
+         axis.text.x = element_text(angle = 90, hjust=1),
+         legend.title = element_blank(),
+         axis.ticks.x = element_blank()) +
+  ggtitle('Age by TIG')
+
+pdf(paste0(out.path, "Fig1_S_age_TIG.pdf"), width = 3, height = 4)
+p_age
+dev.off()
+
+#Grade distribution by TIG (stacked barplot)
+p_grade <- ggplot(df, aes(Grade, fill = Tumor.Immune.Group..CyTOF.based.))+
+  geom_bar()+
+  scale_x_discrete(drop=FALSE)+
+  scale_y_continuous(breaks = c(2,4,6,8))+
+   theme(axis.title.x=element_blank(), 
+         axis.title.y = element_blank(),
+         panel.background = element_blank(),
+         panel.border = element_rect(color = "black", fill = "NA"),
+         axis.text.x = element_text(angle = 90, hjust=1),
+         legend.title = element_blank(),
+         axis.ticks.x = element_blank()) +
+  ggtitle('Grade by TIG')
+
+pdf(paste0(out.path, "Fig1_S_grade_TIG.pdf"), width = 3, height = 4)
+p_grade
+dev.off()
+
+pdf(paste0(out.path, "Fig1_S_clinical_TIG.pdf"), width = 8, height = 4)
+(p_type | p_age | p_grade) + plot_layout(guides = 'collect')
+dev.off()
+```
+
+## Cell type frequencies by age, subtype and grade
+
+```{r}
+celltype.prop <- read.csv(paste0(path, "celltype_prop_sample_v2.csv"), header = TRUE, row.names = )
+df2 <- merge(celltype.prop, df, by = "Patient.ID")
+df2 <- gather(df2, key = "cell.type", value = "proportion", 2:9)
+
+#Cell type freq distribution by clinical subtype (boxplots)
+sign.testing <- compare_means(proportion~Clinical.Subtype, data = df2, group.by = "cell.type")
+p_subtype <- ggplot(df2, aes(x = Clinical.Subtype, y = proportion))+
+  geom_boxplot()+
+  geom_point()+
+  facet_wrap(~cell.type, scales="fixed", ncol=4)+
+   theme(axis.title.x=element_blank(), 
+         axis.title.y = element_blank(),
+         panel.background = element_blank(),
+         panel.border = element_rect(color = "black", fill = "NA"),
+         axis.text.x = element_text(angle = 90, hjust=1),
+         legend.title = element_blank(),
+         axis.ticks.x = element_blank(),
+         strip.background = element_blank()) +
+  ggtitle('Cell type frequency by subtype')+
+  scale_y_continuous(limits = c(0,0.7))+
+  stat_compare_means(comparisons=list(c("LumA", "LumB")), label = "p.signif")
+
+pdf(paste0(out.path, "Fig1_S_subtype_celltype.pdf"), width = 5, height = 6)
+p_subtype
+dev.off()
+
+#Cell type freq distribution by grade (boxplots)
+sign.testing <- compare_means(proportion~Grade, data = df2, group.by = "cell.type")
+my_comparisons <- list(c("G1", "G2"), c("G1", "G3"), c("G2", "G3"))
+p_grade <- ggplot(df2, aes(x = Grade, y = proportion))+
+  geom_boxplot()+
+  geom_point()+
+  facet_wrap(~cell.type, scales="fixed", ncol=4)+
+   theme(axis.title.x=element_blank(), 
+         axis.title.y = element_blank(),
+         panel.background = element_blank(),
+         panel.border = element_rect(color = "black", fill = "NA"),
+         axis.text.x = element_text(angle = 90, hjust=1),
+         legend.title = element_blank(),
+         axis.ticks.x = element_blank(),
+         strip.background = element_blank()) +
+  ggtitle('Cell type frequency by subtype')+
+  scale_y_continuous(limits = c(0,0.7))+
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif")
+
+pdf(paste0(out.path, "Fig1_S_grade_celltype_2.pdf"), width = 5, height = 6)
+p_grade
+dev.off()
+
+#Cell type freq by age (correlation plots)
+p_age <- ggplot(df2, aes(proportion, Age.at.Surgery))+
+  geom_point()+
+  facet_wrap(~cell.type, scales = "free", ncol = 4)+
+  stat_cor()+
+     theme(panel.background = element_blank(),
+         panel.border = element_rect(color = "black", fill = "NA"),
+         strip.background = element_blank()) +
+  ggtitle('Cell type frequency by age')
+
+pdf(paste0(out.path, "Fig1_S_age_celltype.pdf"), width = 8, height = 5)
+p_age
+dev.off()
+```
+
+

@@ -1,0 +1,62 @@
+cluster,cell.type
+11,B cell
+37,B cell
+55,B cell
+8,endothelial
+18,endothelial
+23,endothelial
+35,endothelial
+52,endothelial
+53,endothelial
+60,endothelial
+12,epithelial
+17,epithelial
+24,epithelial
+29,epithelial
+30,epithelial
+32,epithelial
+34,epithelial
+39,epithelial
+42,epithelial
+44,epithelial
+47,epithelial
+51,epithelial
+54,epithelial
+56,epithelial
+57,epithelial
+58,epithelial
+4,fibroblast
+10,fibroblast
+15,fibroblast
+27,fibroblast
+31,fibroblast
+33,fibroblast
+38,fibroblast
+22,granulocyte
+49,granulocyte
+3,myeloid
+5,myeloid
+7,myeloid
+13,myeloid
+14,myeloid
+16,myeloid
+21,myeloid
+36,myeloid
+41,myeloid
+46,pDC
+26,plasma cell
+48,plasma cell
+0,T/NK cell
+1,T/NK cell
+2,T/NK cell
+6,T/NK cell
+9,T/NK cell
+19,T/NK cell
+20,T/NK cell
+25,T/NK cell
+28,T/NK cell
+40,T/NK cell
+43,T/NK cell
+45,T/NK cell
+50,T/NK cell
+59,T/NK cell

@@ -1,0 +1,336 @@
+---
+title: "NicheNet_M-to-T"
+author: "Sandra Tietscher"
+date: "3/31/2020"
+output: html_document
+---
+
+# Load packages and prepare Seurat object
+
+```{r}
+library(nichenetr)
+library(Seurat)
+library(tidyverse)
+library(RColorBrewer)
+library(ComplexHeatmap)
+
+in.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/NicheNet/"
+
+complete.Tcell <- readRDS(file = paste0(in.path, "TNK_cells/regressed_mito-krt-MGP/TNKcell_15dimres1_excl_cl12and20.rds"))
+complete.myeloid <- readRDS(file = paste0(in.path, "myeloid/myeloid_17dim.rds"))
+#complete.epithelial <- readRDS(file = paste0(in.path, "epithelial/complete_epithelial_10dim.rds"))
+#complete.fibroblast <- readRDS(file = paste0(in.path, "fibroblasts/fibroblasts_20dim.rds"))
+
+## save new (unique) cluster names
+#Tcells
+Idents(complete.Tcell) <- complete.Tcell$SCT_snn_res.1
+T.cluster.names <- paste0("T_", levels(complete.Tcell$SCT_snn_res.1))
+names(x = T.cluster.names) <- levels(complete.Tcell$SCT_snn_res.1)
+complete.Tcell <- RenameIdents(object = complete.Tcell, T.cluster.names)
+complete.Tcell[["cluster"]] <- Idents(object = complete.Tcell)
+
+#Myeloid cells
+Idents(complete.myeloid) <- complete.myeloid$SCT_snn_res.0.8
+M.cluster.names <- paste0("M_", levels(complete.myeloid$SCT_snn_res.0.8))
+names(x = M.cluster.names) <- levels(complete.myeloid$SCT_snn_res.0.8)
+complete.myeloid <- RenameIdents(object = complete.myeloid, M.cluster.names)
+complete.myeloid[["cluster"]] <- Idents(object = complete.myeloid)
+
+#Epithelial cells
+#complete.epithelial[["cluster"]] <- "epithelial"
+#Fibroblasts
+#complete.fibroblast[["cluster"]] <- "fibroblast"
+
+## Merge datasets
+complete.TM <- merge(complete.Tcell, complete.myeloid)
+#complete.TM <- merge(complete.Tcell, complete.epithelial)
+#complete.TM <- merge(complete.Tcell, complete.fibroblast)
+
+## Assign new metaclusters
+cluster.ids <- read.csv(file = paste0(out.path, "TM_metacluster_assignment_v1.csv"))
+new.ids <- as.character(cluster.ids$metacluster)
+names(new.ids) <- levels(as.factor(complete.TM$cluster))
+complete.TM <- RenameIdents(complete.TM, new.ids)
+complete.TM$metacluster <- Idents(complete.TM)
+```
+
+
+## Read in NicheNet's built-in models & networks
+
+```{r}
+#ligand-target prior model
+ligand_target_matrix = readRDS(url("https://zenodo.org/record/3260758/files/ligand_target_matrix.rds"))
+ligand_target_matrix[1:5,1:5] # target genes in rows, ligands in columns
+
+#ligand-receptor network
+lr_network = readRDS(url("https://zenodo.org/record/3260758/files/lr_network.rds"))
+head(lr_network)
+
+#weighted networks
+weighted_networks = readRDS(url("https://zenodo.org/record/3260758/files/weighted_networks.rds"))
+weighted_networks_lr = weighted_networks$lr_sig %>% inner_join(lr_network %>% distinct(from,to), by = c("from","to"))
+head(weighted_networks$lr_sig) # interactions and their weights in the ligand-receptor + signaling network
+head(weighted_networks$gr) # interactions and their weights in the gene regulatory network
+```
+
+## Define a "sender/niche" cell population and a "receiver/target" cell population & get their expression data
+
+```{r}
+## receiver (all CD8 and naive T cells)
+receiver = c("T_CD8_exh", "T_CD8", "T_naive")
+expressed_genes_receiver = get_expressed_genes(receiver, complete.TM, pct = 0.10)
+background_expressed_genes = expressed_genes_receiver %>% .[. %in% rownames(ligand_target_matrix)]
+
+## sender (all myeloid cell types)
+sender_celltypes = c("TAM", "mono", "DC", "M_KI67", "M_unassigned")
+#sender_celltypes = c("fibroblast")
+list_expressed_genes_sender = sender_celltypes %>% unique() %>% lapply(get_expressed_genes, complete.TM, 0.10) # lapply to get the expressed genes of every sender cell type separately here
+expressed_genes_sender = list_expressed_genes_sender %>% unlist() %>% unique()
+```
+
+## Define a gene set of interest
+These are the genes in the “receiver/target” cell population that are potentially affected by ligands expressed by interacting cells (e.g. genes differentially expressed upon cell-cell interaction) --> Choose genes that are differentially expressed in exhausted CD8 T cells.
+
+```{r}
+condition_oi = "T_CD8_exh"
+condition_reference = c("T_CD8", "T_naive")
+
+DE_table_receiver = FindMarkers(complete.TM, ident.1 = condition_oi, ident.2 = condition_reference, min.pct = 0.10, test.use = "MAST") %>% rownames_to_column("gene")
+
+geneset_oi = DE_table_receiver %>% filter(p_val_adj <= 0.05 & avg_logFC >= 0.30) %>% pull(gene)
+geneset_oi = geneset_oi %>% .[. %in% rownames(ligand_target_matrix)]
+```
+
+## Define a set of potential ligands
+These are ligands that are expressed by the “sender/niche” cell population and bind a (putative) receptor expressed by the “receiver/target” population.
+Because we combined the expressed genes of each sender cell type, in this example, we will perform one NicheNet analysis by pooling all ligands from all cell types together. Later on during the interpretation of the output, we will check which sender cell type expresses which ligand.
+
+```{r}
+ligands = lr_network %>% pull(from) %>% unique()
+receptors = lr_network %>% pull(to) %>% unique()
+
+expressed_ligands = intersect(ligands,expressed_genes_sender)
+expressed_receptors = intersect(receptors,expressed_genes_receiver)
+
+potential_ligands = lr_network %>% filter(from %in% expressed_ligands & to %in% expressed_receptors) %>% pull(from) %>% unique()
+```
+
+## Perform NicheNet ligand activity analysis
+Rank the potential ligands based on the presence of their target genes in the gene set of interest (compared to the background set of genes)
+
+```{r}
+ligand_activities = predict_ligand_activities(geneset = geneset_oi, background_expressed_genes = background_expressed_genes, ligand_target_matrix = ligand_target_matrix, potential_ligands = potential_ligands)
+
+ligand_activities = ligand_activities %>% arrange(-pearson) %>% mutate(rank = rank(desc(pearson)))
+ligand_activities
+
+#save as csv
+#write.csv(ligand_activities, file = paste0(out.path, "ligand_activities_v1_MAST.csv"), row.names = FALSE)
+
+#pick 30 best upstream ligands
+best_upstream_ligands = ligand_activities %>% top_n(30, pearson) %>% arrange(-pearson) %>% pull(test_ligand) %>% unique()
+DotPlot(complete.TM, features = best_upstream_ligands %>% rev(), cols = "RdYlBu") + RotatedAxis()
+```
+
+## Infer receptors and top-predicted target genes of ligands that are top-ranked in the ligand activity analysis
+
+For visualization purposes, we adapted the ligand-target regulatory potential matrix as follows. Regulatory potential scores were set as 0 if their score was below a predefined threshold, which was here the 0.33 quantile of scores of interactions between the 30 top-ranked ligands and each of their respective top targets (see the ligand-target network defined in the data frame).
+
+```{r}
+####################################
+### Active target gene inference ###
+####################################
+
+active_ligand_target_links_df = best_upstream_ligands[1:10] %>% lapply(get_weighted_ligand_target_links,geneset = geneset_oi, ligand_target_matrix = ligand_target_matrix, n = 200) %>% bind_rows() %>% drop_na()
+
+active_ligand_target_links = prepare_ligand_target_visualization(ligand_target_df = active_ligand_target_links_df, ligand_target_matrix = ligand_target_matrix, cutoff = 0.2)
+
+order_ligands = intersect(best_upstream_ligands[1:10], colnames(active_ligand_target_links)) %>% rev() %>% make.names()
+order_targets = active_ligand_target_links_df$target %>% unique() %>% intersect(rownames(active_ligand_target_links)) %>% make.names()
+rownames(active_ligand_target_links) = rownames(active_ligand_target_links) %>% make.names() # make.names() for heatmap visualization of genes like H2-T23
+colnames(active_ligand_target_links) = colnames(active_ligand_target_links) %>% make.names() # make.names() for heatmap visualization of genes like H2-T23
+
+vis_ligand_target = active_ligand_target_links[order_targets,order_ligands] %>% t()
+
+p_ligand_target_network = vis_ligand_target %>% make_heatmap_ggplot("Prioritized myeloid ligands","CD8 exhaustion-related genes", color = "purple",legend_position = "right", x_axis_position = "top",legend_title = "Regulatory potential")  + theme(axis.text.x = element_text(face = "italic")) + scale_fill_gradient2(low = "whitesmoke",  high = "purple", breaks = c(0,0.003,0.006, 0.009))
+p_ligand_target_network
+
+#######################################
+### Receptors of top-ranked ligands ###
+#######################################
+
+lr_network_top = lr_network %>% filter(from %in% best_upstream_ligands & to %in% expressed_receptors) %>% distinct(from,to)
+best_upstream_receptors = lr_network_top %>% pull(to) %>% unique()
+
+lr_network_top_df_large = weighted_networks_lr %>% filter(from %in% best_upstream_ligands & to %in% best_upstream_receptors)
+
+lr_network_top_df = lr_network_top_df_large %>% spread("from","weight",fill = 0)
+lr_network_top_matrix = lr_network_top_df %>% select(-to) %>% as.matrix() %>% magrittr::set_rownames(lr_network_top_df$to)
+
+dist_receptors = dist(lr_network_top_matrix, method = "binary")
+hclust_receptors = hclust(dist_receptors, method = "ward.D2")
+order_receptors = hclust_receptors$labels[hclust_receptors$order]
+    
+dist_ligands = dist(lr_network_top_matrix %>% t(), method = "binary")
+hclust_ligands = hclust(dist_ligands, method = "ward.D2")
+order_ligands_receptor = hclust_ligands$labels[hclust_ligands$order]
+
+order_receptors = order_receptors %>% intersect(rownames(lr_network_top_matrix))
+order_ligands_receptor = order_ligands_receptor %>% intersect(colnames(lr_network_top_matrix))
+
+vis_ligand_receptor_network = lr_network_top_matrix[order_receptors, order_ligands_receptor]
+rownames(vis_ligand_receptor_network) = order_receptors %>% make.names()
+colnames(vis_ligand_receptor_network) = order_ligands_receptor %>% make.names()
+
+p_ligand_receptor_network = vis_ligand_receptor_network %>% t() %>% make_heatmap_ggplot("Ligands","Receptors", color = "mediumvioletred", x_axis_position = "top",legend_title = "Prior interaction potential")
+p_ligand_receptor_network
+
+#################################################
+### BONA FIDE receptors of top-ranked ligands ###
+#################################################
+
+lr_network_strict = lr_network %>% filter(database != "ppi_prediction_go" & database != "ppi_prediction")
+ligands_bona_fide = lr_network_strict %>% pull(from) %>% unique()
+receptors_bona_fide = lr_network_strict %>% pull(to) %>% unique()
+
+lr_network_top_df_large_strict = lr_network_top_df_large %>% distinct(from,to) %>% inner_join(lr_network_strict, by = c("from","to")) %>% distinct(from,to)
+lr_network_top_df_large_strict = lr_network_top_df_large_strict %>% inner_join(lr_network_top_df_large, by = c("from","to"))
+
+lr_network_top_df_strict = lr_network_top_df_large_strict %>% spread("from","weight",fill = 0)
+lr_network_top_matrix_strict = lr_network_top_df_strict %>% select(-to) %>% as.matrix() %>% magrittr::set_rownames(lr_network_top_df_strict$to)
+
+dist_receptors = dist(lr_network_top_matrix_strict, method = "binary")
+hclust_receptors = hclust(dist_receptors, method = "ward.D2")
+order_receptors = hclust_receptors$labels[hclust_receptors$order]
+
+dist_ligands = dist(lr_network_top_matrix_strict %>% t(), method = "binary")
+hclust_ligands = hclust(dist_ligands, method = "ward.D2")
+order_ligands_receptor = hclust_ligands$labels[hclust_ligands$order]
+
+order_receptors = order_receptors %>% intersect(rownames(lr_network_top_matrix_strict))
+order_ligands_receptor = order_ligands_receptor %>% intersect(colnames(lr_network_top_matrix_strict))
+
+vis_ligand_receptor_network_strict = lr_network_top_matrix_strict[order_receptors, order_ligands_receptor]
+rownames(vis_ligand_receptor_network_strict) = order_receptors %>% make.names()
+colnames(vis_ligand_receptor_network_strict) = order_ligands_receptor %>% make.names()
+
+p_ligand_receptor_network_strict = vis_ligand_receptor_network_strict %>% t() %>% make_heatmap_ggplot("Ligands","Receptors", color = "mediumvioletred", x_axis_position = "top",legend_title = "Prior interaction potential\n(bona fide)")
+p_ligand_receptor_network_strict
+```
+
+## Summary visualization
+
+```{r}
+# combined heatmap: overlay ligand activities with target genes
+ligand_pearson_matrix = ligand_activities %>% select(pearson) %>% as.matrix() %>% magrittr::set_rownames(ligand_activities$test_ligand)
+
+rownames(ligand_pearson_matrix) = rownames(ligand_pearson_matrix) %>% make.names()
+colnames(ligand_pearson_matrix) = colnames(ligand_pearson_matrix) %>% make.names()
+
+vis_ligand_pearson = ligand_pearson_matrix[order_ligands, ] %>% as.matrix(ncol = 1) %>% magrittr::set_colnames("Pearson")
+p_ligand_pearson = vis_ligand_pearson %>% make_heatmap_ggplot("Prioritized ligands","Ligand activity", color = "#4B7010",legend_position = "right", x_axis_position = "top", legend_title = "Pearson correlation coefficient\n(target gene prediction ability)") + theme(legend.text = element_text(size = 9))
+
+figures_without_legend = cowplot::plot_grid(p_ligand_pearson + theme(legend.position = "none", axis.ticks = element_blank()) + theme(axis.title.x = element_text()),
+    p_ligand_target_network + theme(legend.position = "none", axis.ticks = element_blank()) + ylab(""),
+    align = "hv",
+    nrow = 1,
+    rel_widths = c(ncol(vis_ligand_pearson)+10, ncol(vis_ligand_target)))
+
+legends = cowplot::plot_grid(
+    ggpubr::as_ggplot(ggpubr::get_legend(p_ligand_pearson)),
+    ggpubr::as_ggplot(ggpubr::get_legend(p_ligand_target_network)),
+    nrow = 1,
+    align = "h")
+
+combined_plot = cowplot::plot_grid(figures_without_legend, legends, rel_heights = c(10,2), nrow = 2, align = "hv")
+combined_plot
+```
+
+## Plot average expression of myeloid ligands per patient sample (in myeloid subset)
+
+```{r}
+order_ligands <- gsub("\\.", "-", order_ligands)
+Idents(complete.myeloid) <- complete.myeloid$orig.ident
+sample.averages.table <- AverageExpression(object = complete.myeloid, return.seurat = FALSE, assays = "RNA")[[1]][order_ligands,]
+RNA.average.norm <- t(apply(sample.averages.table, 1, function(x)(x-min(x))/(max(x)-min(x))))
+
+order_tumors <- c("TBB011", "TBB111", "TBB129", "TBB165", "TBB171", "TBB184", "TBB338",
+                  "TBB035", "TBB075", "TBB102", "TBB212", "TBB214", "TBB226", "TBB330")
+pseudotime_tumors <- c("TBB171", "TBB011", "TBB129", "TBB184", "TBB111", "TBB165", "TBB338", "TBB102", "TBB214", "TBB226", "TBB035", "TBB212", "TBB330", "TBB075")
+
+vis_ligand_tumor_expression = as.matrix(RNA.average.norm[order_ligands, pseudotime_tumors])
+color = viridis(100)
+p_ligand_tumor_expression = vis_ligand_tumor_expression  %>% make_threecolor_heatmap_ggplot("Ligand","Patient", low_color = color[1],mid_color = color[50], mid = 0.5, high_color = color[100], legend_position = "top", x_axis_position = "top" , legend_title = "Scaled expression\n(averaged over\nsingle cells)") + theme(axis.text.x = element_text(face = "italic"))
+p_ligand_tumor_expression
+
+sample.average <- t(as.matrix(colMeans(vis_ligand_tumor_expression)))
+                    
+p_tumor_average <- make_heatmap_ggplot(sample.average, y_name = "average.expression", x_name = "sample", color = "darkorange",legend_position = "top", x_axis_position = "top", legend_title = "Average (scaled) M-ligand expression") + theme(legend.text = element_text(size = 9))
+
+# TIG averages
+Idents(complete.myeloid) <- complete.myeloid$TIG
+TIG.averages.table <- AverageExpression(object = complete.myeloid, return.seurat = FALSE, assays = "RNA")[[1]][order_ligands,]
+TIG.averages <- as.matrix(TIG.averages.table)
+p_TIG_average <- make_heatmap_ggplot(TIG.averages, y_name = "average.expression", x_name = "sample", color = "darkorange",legend_position = "top", x_axis_position = "top", legend_title = "Average (scaled) M-ligand expression") + theme(legend.text = element_text(size = 9))
+
+# combine TIG & cluster averages
+TIG.sample.average <- cbind(sample.averages.table, TIG.averages.table)
+TIG.sample.norm <- t(apply(TIG.sample.average, 1, function(x)(x-min(x))/(max(x)-min(x))))
+vis_ligand_average_expression = as.matrix(TIG.sample.norm[order_ligands, 15:16])
+
+p_ligand_average_expression = vis_ligand_average_expression  %>% make_threecolor_heatmap_ggplot("Ligand","TIG", low_color = color[1],mid_color = color[50], mid = 0.5, high_color = color[100], legend_position = "right", x_axis_position = "top" , legend_title = "Average expression\n(normalized over\nsample averages)") + theme(axis.text.x = element_text(face = "italic"))
+p_ligand_average_expression
+```
+
+## Plot average expression of target GOIs per tumor sample (in total T/NK subset)
+
+```{r}
+Idents(complete.Tcell) <- complete.Tcell$orig.ident
+sample.averages.T <- AverageExpression(object = complete.Tcell, return.seurat = FALSE, assays = "RNA")[[1]][order_targets,]
+RNA.average.norm.T <- apply(sample.averages.T , 1, function(x)(x-min(x))/(max(x)-min(x)))
+
+#order_tumors <- c("TBB011", "TBB111", "TBB129", "TBB165", "TBB171", "TBB184", "TBB338",
+#                  "TBB035", "TBB075", "TBB102", "TBB212", "TBB214", "TBB226", "TBB330")
+pseudotime_tumors <- c("TBB171", "TBB011", "TBB129", "TBB184", "TBB111", "TBB165", "TBB338", "TBB102", "TBB214", "TBB226", "TBB035", "TBB212", "TBB330", "TBB075")
+
+vis_receptor_tumor_expression = as.matrix(RNA.average.norm.T[pseudotime_tumors, ])
+color = viridis(100)
+p_ligand_tumor_expression = vis_receptor_tumor_expression  %>% make_threecolor_heatmap_ggplot("Patient","GOI", low_color = color[1],mid_color = color[50], mid = 0.5, high_color = color[100], legend_position = "top", x_axis_position = "top" , legend_title = "Scaled expression\n(averaged over\nsingle cells)") + theme(axis.text.x = element_text(face = "italic"))
+p_ligand_tumor_expression
+
+sample.average.T <- t(as.matrix(rowMeans(vis_receptor_tumor_expression)))
+                    
+p_tumor_average <- make_heatmap_ggplot(sample.average.T, y_name = "average.expression", x_name = "sample", color = "darkorange",legend_position = "top", x_axis_position = "top", legend_title = "Averaged scaled target expression (over all T/NK cells)") + theme(legend.text = element_text(size = 9))
+```
+
+## Infer ligand-to-target signaling paths ##
+
+```{r}
+ligand_tf_matrix = readRDS(url("https://zenodo.org/record/3260758/files/ligand_tf_matrix.rds"))
+ligands_all = "IL15" 
+targets_all = c("CLEC2B")
+
+active_signaling_network = get_ligand_signaling_path(ligand_tf_matrix = ligand_tf_matrix, ligands_all = ligands_all, targets_all = targets_all, weighted_networks = weighted_networks)
+
+# For better visualization of edge weigths: normalize edge weights to make them comparable between signaling and gene regulatory interactions
+active_signaling_network_min_max = active_signaling_network
+active_signaling_network_min_max$sig = active_signaling_network_min_max$sig %>% mutate(weight = ((weight-min(weight))/(max(weight)-min(weight))) + 0.75)
+active_signaling_network_min_max$gr = active_signaling_network_min_max$gr %>% mutate(weight = ((weight-min(weight))/(max(weight)-min(weight))) + 0.75)
+
+graph_min_max = diagrammer_format_signaling_graph(signaling_graph_list = active_signaling_network_min_max, ligands_all = ligands_all, targets_all = targets_all, sig_color = "indianred", gr_color = "steelblue")
+
+DiagrammeR::render_graph(graph_min_max, layout = "tree")
+
+data_source_network = infer_supporting_datasources(signaling_graph_list = active_signaling_network,lr_network = lr_network, sig_network = sig_network, gr_network = gr_network)
+head(data_source_network) 
+```
+
+## Plot target gene prediction by the top30 ranked ligands ##
+
+```{r}
+ligands <- rev(order_ligands)
+ligand_target_sub <- ligand_target_matrix[geneset_oi, test]
+Heatmap(ligand_target_sub)
+```
+

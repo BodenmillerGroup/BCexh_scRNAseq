@@ -1,0 +1,245 @@
+---
+title: "Fig4_pseudobulk"
+author: "Sandra Tietscher"
+date: "5/5/2020"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(magrittr)
+library(viridis)
+library(patchwork)
+library(edgeR)
+library(ggrepel)
+
+in.path = "Y://Code/10x/10x_Run1_Run2_Pilot_comb/output/myeloid/"
+out.path = "Y://Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/Fig4/" 
+all.myeloid <- readRDS(file= paste0(in.path, "myeloid_excl_cl9.rds"))
+```
+
+## Prepare data for pseudobulk analysis 
+For cluster-independent TIG comparison
+
+```{r}
+
+##### without computing sample averages
+raw.counts <- all.myeloid@assays$RNA@counts
+raw.counts <- as.data.frame(raw.counts)
+raw.counts$TBB011 <- rowSums(raw.counts[,grep("TBB011", names(raw.counts))])
+raw.counts$TBB035 <- rowSums(raw.counts[,grep("TBB035", names(raw.counts))])
+raw.counts$TBB075 <- rowSums(raw.counts[,grep("TBB075", names(raw.counts))])
+raw.counts$TBB102 <- rowSums(raw.counts[,grep("TBB102", names(raw.counts))])
+raw.counts$TBB111 <- rowSums(raw.counts[,grep("TBB111", names(raw.counts))])
+raw.counts$TBB129 <- rowSums(raw.counts[,grep("TBB129", names(raw.counts))])
+raw.counts$TBB165 <- rowSums(raw.counts[,grep("TBB165", names(raw.counts))])
+raw.counts$TBB171 <- rowSums(raw.counts[,grep("TBB171", names(raw.counts))])
+raw.counts$TBB184 <- rowSums(raw.counts[,grep("TBB184", names(raw.counts))])
+raw.counts$TBB212 <- rowSums(raw.counts[,grep("TBB212", names(raw.counts))])
+raw.counts$TBB214 <- rowSums(raw.counts[,grep("TBB214", names(raw.counts))])
+raw.counts$TBB226 <- rowSums(raw.counts[,grep("TBB226", names(raw.counts))])
+raw.counts$TBB330 <- rowSums(raw.counts[,grep("TBB330", names(raw.counts))])
+raw.counts$TBB338 <- rowSums(raw.counts[,grep("TBB338", names(raw.counts))])
+
+raw.sums <- raw.counts[,25948:25961]
+write.csv(raw.sums, file = paste0(out.path, "sample_sum_counts_excl_cl9.csv"), row.names = TRUE)
+```
+
+## Run EdgeR
+
+```{r}
+# ################################
+# ## preparing a DGEList object ##
+# ################################
+# 
+# #group 1 is TIG2, group 2 is TIG3
+# #group <- c(1,2,2,2,1,1,1,2,2,2,2,1) # withouth neoadjuvantly treated samples
+# group <- c(1,2,2,2,1,1,1,1,1,2,2,2,2,1)
+# obj <- DGEList(counts=raw.sums, group=group)
+# obj$samples
+# head(obj$counts)
+# 
+# # Normalisation for RNA composition using TMM (trimmed mean of M-values)
+# obj <- calcNormFactors(obj, na.rm=TRUE)
+# obj$samples
+# 
+# # read in table with column data
+# coldata <- read.csv("~/Code/10x/10x_Run1_Run2_Pilot_comb/output/myeloid/pseudobulk/EdgeR_coldata_for_samplesums.csv", row.names = 1)
+# 
+# 
+# ##########################
+# ## Setting up the model ##
+# ##########################
+# 
+# # Set up the design matrix (for a simple two-group-comparison design)
+# Sample <- factor(coldata$sample)
+# Condition <- factor(coldata$TIG)
+# design <- model.matrix(~Condition)
+# 
+# # Estimate dispersion
+# obj <- estimateDisp(obj, design)
+# plotBCV(obj)
+# 
+# 
+# ##################
+# ## Calculate DE ##
+# ##################
+# 
+# # exact test (only for single-factor experiments)
+# et <- exactTest(obj)
+# topTags(et)
+# 
+# # Number of up/downregulated genes at 5% FDR
+# summary(decideTests(et))
+# plotMD(et)
+# abline(h=c(-1,1), col ="blue")
+# 
+# # Export Results
+# write.csv(as.data.frame(topTags(et, n=Inf)), file=paste0(in.path, "pseudobulk/TIG3vsTIG2_EdgeR_samplesums_exactT_excl_cl9.csv"))
+```
+
+## Volcano Plot
+
+```{r}
+#Read EdgeR data
+edger = read.csv(paste0(in.path, "pseudobulk/excl_cluster9/TIG3vsTIG2_EdgeR_samplesums_exactT_excl_cl9.csv"))
+edger <- read.csv("Y://Code/10x/10x_Run1_Run2_Pilot_comb/output/myeloid/pseudobulk/TIG3vsTIG2_EdgeR_samplesums_exactT_filtered.csv")
+edger$logFC <- -(edger$logFC)
+
+#remove keratins
+edger <- filter(edger, !str_detect(X, "^KRT"))
+edger$X <- as.character(edger$X)
+#remove all genes with logCPM < 1.5
+edger <- filter(edger, logCPM > 1.5)
+
+highlight <- c("CCL18", "GALM", "GAPT", "TGM2", "MT1M", "MMP12", "CLEC4D", "CPB1", "MMP9", "C1QA", "PDCD4", "CCL13", "MT2A")
+
+
+edger$color <- as.character(ifelse(edger$FDR < 0.05 & edger$logFC > 0.5, "#F8766D", 
+                      ifelse(edger$FDR < 0.05 & edger$logFC < -0.5, "#00BFC4", "grey")))
+
+#Plot with ggplot
+p <- ggplot(edger) +
+  geom_point(aes(logFC, -log(FDR)), color=edger$color)+
+  geom_label_repel(data = subset(edger, X %in% highlight_2), aes(logFC, -log(FDR), label = X), min.segment.length = 0.1)+
+  geom_vline(xintercept = 0.5, linetype = "dotted", color = "grey20")+
+  geom_vline(xintercept = -0.5, linetype = "dotted", color = "grey20")+
+  geom_hline(yintercept = -log(0.05), linetype = "dotted", color = "grey20")+
+    theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"))
+```
+
+## Volcano Plot with gene classes highlighted
+
+```{r}
+highlight_2 <- c("CCL18", "CCL13", "C2", "C1QA", "C1QB", "MMP12", "MMP9", "MMP19",  "MT1G", "MT1M", "MT1A", "MT1E", "MT1F", "GALM", "TGM2", "GAPT", "CPB1", "MMP2", "MT1X", "MT2A")
+cytokines <- c("CCL18", "CCL13", "CXCL9", "IL6", "IL32", "IL7", "CCL5", "IFNG")
+complement <- c("C2", "C1QA", "C1QB", "C1QC")
+MMP <- c("MMP12", "MMP1", "MMP9", "MMP19", "MMP14", "MMP2")
+MT <- c("MT1H", "MT1G", "MT1M", "MT1A", "MT1E", "MT1F", "MT1X", "MT2A")
+
+
+edger$color <- as.character(ifelse(edger$X %in% cytokines, "#999900", 
+                      ifelse(edger$X %in% complement, "#004C99", ifelse(edger$X %in% MMP, "#7F00FF", ifelse(edger$X %in% MT, "#FF8000", "grey")))))
+
+#Plot with ggplot
+p <- ggplot(edger) +
+  geom_point(aes(logFC, -log(FDR)), color=edger$color)+
+  geom_label_repel(data = subset(edger, X %in% highlight_2), aes(logFC, -log(FDR), label = X), min.segment.length = 0.2, color = subset(edger, X %in% highlight_2)$color, force = 3)+
+  geom_vline(xintercept = 0.5, linetype = "dotted", color = "grey20")+
+  geom_vline(xintercept = -0.5, linetype = "dotted", color = "grey20")+
+  geom_hline(yintercept = -log(0.1), linetype = "dotted", color = "grey20")+
+    theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"))
+```
+
+### With grade-accounted EdgeR output
+
+```{r}
+#Read EdgeR data
+#edger = read.csv(paste0(in.path, "pseudobulk/IE1vsIE2_EdgeR_samplesums_gradecorrected.csv"))
+edger = read.csv(paste0(in.path, "pseudobulk/IE1vsIE2_EdgeR_samplesums_gradecorrected_filtered.csv"))
+
+#remove keratins
+edger <- filter(edger, !str_detect(X, "^KRT"))
+edger$X <- as.character(edger$X)
+#remove all genes with logCPM < 1.5
+edger <- filter(edger, logCPM > 1.5)
+
+edger$color <- as.character(ifelse(edger$X %in% cytokines, "#999900", 
+                      ifelse(edger$X %in% complement, "#004C99", ifelse(edger$X %in% MMP, "#7F00FF", ifelse(edger$X %in% MT, "#FF8000", "grey")))))
+
+#Plot with ggplot
+p2 <- ggplot(edger) +
+  geom_point(aes(logFC, -log(FDR)), color=edger$color)+
+  geom_label_repel(data = subset(edger, X %in% highlight_2), aes(logFC, -log(FDR), label = X), min.segment.length = 0.2, color = subset(edger, X %in% highlight_2)$color, force = 3, max.overlaps = 15)+
+  geom_vline(xintercept = 0.5, linetype = "dotted", color = "grey20")+
+  geom_vline(xintercept = -0.5, linetype = "dotted", color = "grey20")+
+  geom_hline(yintercept = -log(0.1), linetype = "dotted", color = "grey20")+
+    theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"))
+
+#use p-value instead of FDR
+# p <- ggplot(edger) +
+#   geom_point(aes(logFC, -log(PValue)), color=edger$color)+
+#   geom_label_repel(data = subset(edger, X %in% highlight_2), aes(logFC, -log(PValue), label = X), min.segment.length = 0.2, color = subset(edger, X %in% highlight_2)$color, force = 3)+
+#   geom_vline(xintercept = 0.5, linetype = "dotted", color = "grey20")+
+#   geom_vline(xintercept = -0.5, linetype = "dotted", color = "grey20")+
+#   geom_hline(yintercept = -log(0.05), linetype = "dotted", color = "grey20")+
+#     theme(panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         panel.background = element_blank(),
+#         panel.border = element_rect(colour = "black", fill="NA"))
+```
+
+
+## EdgeR logFC plots
+
+```{r}
+colnames(edger)[1] <- "gene"
+
+## define sets of genes
+complement_red = c("C1QA", "C1QB", "C1QC", "C2", "C3")
+complement_full = c("CFB", "CFD", "CFP", "COLEC10", "COLEC11", "C1QA", "C1QB", "C1QC", "C2", "C3", "C1R", "C1S", "C4A", "C4B", "C5", "C6", "C7", "C8A", "C8B", "C8G", "C9", "FCN1", "FCN2", "FCN3", "MASP1", "MASP2", "MBL2")
+MMPs <- c("MMP1", "MMP2", "MMP3", "MMP7", "MMP8", "MMP9", "MMP10", "MMP11", "MMP12", "MMP13", "MMP14", "MMP15", "MMP16", "MMP17", "MMP19", "MMP21", "MMP23B", "MMP24", "MMP25","MMP27", "MMP28")
+metallothioneins <- c("MT1A", "MT1E", "MT1F", "MT1G", "MT1H",  "MT1M",  "MT1X", "MT2A", "MT3")
+cytokines <- c("CCL18", "CCL13", "CCL5", "CXCL9", "IL32", "IL6", "IL7", "IFNG")
+T_supp <- c("CD80", "CD86", "IDO1", "CD274", "PDCD1LG2",  "TNFSF10", "HLA-E", "HLA-G", "VTCN1", "FASLG", "IL10", "TGFB1", "TGFB2", "PTGS2", "PTGES", "LGALS9", "CCL22")
+T_attr <- c("CCL21", "CCL17",  "CCL2", "CXCL9", "CXCL10", "CXCL11", "CXCL12", "CCL3", "CCL4", "CCL5", "CXCL16")
+
+# #define FDR cutoffs
+# edger$FDR_y <- ifelse(edger$FDR<0.05, "<0.05", ifelse(edger$FDR<0.1, "<0.1", ifelse(edger$FDR<0.2, "<0.2", ">0.2"))) 
+# edger$p_y <- ifelse(edger$PValue<0.05, "<0.05", ">0.05")
+
+#define FDR cutoffs
+edger$FDR_y <- ifelse(edger$FDR<0.01, "<0.01", ifelse(edger$FDR<0.1, "<0.1", ifelse(edger$FDR<0.3, "<0.3", ">0.3"))) 
+edger$p_y <- ifelse(edger$PValue<0.05, "<0.05", ">0.05")
+cols <- c('#690085', "#C80DFF", "#FF6DFF", "#A0A0A0")
+names(cols) <- c("<0.01", "<0.1", "<0.3", ">0.3")
+
+#plot
+GOI <- complement_full
+p = subset(edger, gene %in% GOI)%>%
+  #ggplot(aes(x= factor(gene, levels=rev(GOI)), y = logFC))+
+  ggplot(aes(x= factor(gene, levels=unique(gene[order(logFC)])), y = logFC))+
+  geom_col(aes(fill=FDR_y))+
+  #scale_fill_gradient2(low = "#009900", mid = "grey70", high = "grey70", midpoint = 0.6, limits = c(0,1))+
+  scale_fill_manual(values = cols)+
+  labs(y="logFC: TIG2 vs. TIG3", x="gene")+
+  coord_flip()+
+  labs(fill="False Discovery Rate")+
+  theme(panel.background=element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))
+```
+
+

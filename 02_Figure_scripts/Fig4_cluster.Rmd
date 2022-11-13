@@ -1,0 +1,375 @@
+---
+title: "Fig4_cluster"
+author: "Sandra Tietscher"
+date: "5/5/2020"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(clustree)
+library(magrittr)
+library(viridis)
+library(patchwork)
+library(ComplexHeatmap)
+library(ggpubr)
+
+in.path = "Z://sandrat/Code/10x/10x_Run1_Run2_Pilot_comb/output/myeloid/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/Fig4/" 
+all.myeloid <- readRDS(file= paste0(in.path, "myeloid_excl_cl9.rds"))
+```
+
+# Assign new cluster names and metacluster identity
+Already done when reading in new object.
+
+```{r}
+#Read in table with cluster ids
+# cluster.ids <- read.csv(file = paste0(in.path, "metacluster_assignment_v2.csv"))
+# 
+# #Metacluster assignment
+# Idents(all.myeloid) <- all.myeloid$SCT_snn_res.0.8
+# role.ids <- as.character(cluster.ids$metacluster)
+# names(role.ids) <- levels(all.myeloid)
+# all.myeloid <- RenameIdents(object = all.myeloid, role.ids)
+# #Save celltype information in metadata
+# all.myeloid[["metacluster"]] <- Idents(object = all.myeloid)
+# 
+# #New cluster names
+# Idents(all.myeloid) <- all.myeloid$SCT_snn_res.0.8
+# new.names <- as.character(cluster.ids$cluster_name)
+# names(new.names) <- levels(all.myeloid)
+# all.myeloid <- RenameIdents(object = all.myeloid, new.names)
+# #Save celltype information in metadata
+# all.myeloid[["cluster"]] <- Idents(object = all.myeloid)
+# #Re-order levels
+# old.levels <- levels(all.myeloid$cluster)
+# level.order <- c(4,6,2,3,5,7:9,16,13,15,1,12,14,11,10)
+# all.myeloid$cluster <- factor(all.myeloid$cluster, levels = old.levels[level.order])
+# all.myeloid$SCT_snn_res.0.8 <- factor(all.myeloid$SCT_snn_res.0.8, levels = levels(all.myeloid$SCT_snn_res.0.8)[level.order])
+# DimPlot(all.myeloid, group.by = "cluster")
+# DimPlot(all.myeloid, group.by = "SCT_snn_res.0.8")
+# 
+# #Remove M-unassigned (likely broken cells)
+# all.myeloid <- subset(all.myeloid, idents="M-unassigned", invert = TRUE)
+# all.myeloid$cluster <- droplevels(all.myeloid$cluster)
+
+# #Save
+# saveRDS(all.myeloid, paste0(in.path, "myeloid_excl_cl9.rds"))
+```
+
+## Generate UMAP plots
+
+```{r}
+## reorder patient levels
+all.myeloid$orig.ident <- as.factor(all.myeloid$orig.ident)
+old.levels <- levels(all.myeloid$orig.ident)
+all.myeloid$orig.ident <- factor(all.myeloid$orig.ident, levels =  old.levels[c(1,5:9,14, 2:4, 10:13)])
+
+#Subset to very few cells to get small pdfs (for vectorized legends)
+cells <- WhichCells(all.myeloid)
+cells.sub <- sample(cells, 100)
+object <- subset(all.myeloid, cells = cells.sub)
+
+object <- all.myeloid
+  
+umap_clustername<- DimPlot(object, group.by = "cluster")+
+  theme_void()
+umap_patient <- DimPlot(object, group.by = "orig.ident")+
+  theme_void()
+umap_TIG <- DimPlot(object, group.by = "TIG")+
+  theme_void()
+umap_clusternumber <- DimPlot(object, group.by = "SCT_snn_res.0.8", label=TRUE)+
+  theme_void()
+umap_metacluster <- DimPlot(object, group.by = "metacluster")+
+  theme_void()
+
+pdf(paste0(out.path, "Fig4_umap_small.pdf"), width = 20, height = 20)
+p <- (umap_clustername | umap_clusternumber) / (umap_TIG | umap_patient)
+p
+dev.off()
+
+png(paste0(out.path, "Fig4_umap_cluster.png"), width = 20, height = 16, units = "cm", res = 200)
+umap_clustername
+dev.off()
+```
+
+## Cluster frequency by sample, by TIG & by pre-treatment status
+
+```{r}
+#Sample composition
+sample.comp <- as.data.frame(prop.table(x=table(all.myeloid$cluster, all.myeloid$orig.ident), margin=2))
+p_sample_comp = ggplot(sample.comp, aes(Var2, y = Freq, fill=Var1)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('Sample composition (Myeloid clusters)')
+
+#Cluster composition (relative)
+cluster.comp <- as.data.frame(prop.table(x=table(all.myeloid$orig.ident, all.myeloid$cluster), margin=2))
+p_cluster_comp = ggplot(cluster.comp, aes(Var2, y = Freq, fill=Var1)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('Cluster composition (by patient sample)')
+
+#Cluster composition (absolute)
+cluster.comp.abs <- as.data.frame(table(all.myeloid$cluster, all.myeloid$orig.ident))
+p_cluster_comp_abs = ggplot(cluster.comp.abs, aes(Var1, y = Freq, fill=Var2)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  theme(panel.background = element_blank(), axis.text.x=element_text(angle=45, hjust=1))+
+  ggtitle('Cluster composition (by patient sample)')
+
+pdf(paste0(out.path, "Fig4S_cluster_sample_comp.pdf"), width = 8, height = 12)
+p_sample_comp / p_cluster_comp_abs
+dev.off()
+
+
+### Cluster frequencies by TIG ###
+colnames(sample.comp) <- c("cluster", "sample", "proportion")
+sample.comp$TIG <- ifelse(sample.comp$sample == "TBB129" | sample.comp$sample  == "TBB171" | sample.comp$sample  == "TBB111" | sample.comp$sample  == "TBB165" | sample.comp$sample  == "TBB338" | sample.comp$sample  == "TBB184" | sample.comp$sample  == "TBB011", "TIG2", "TIG3")
+
+# Calculate Wilcoxon Test
+tdat <- as.data.table(sample.comp)
+tdat$cluster <- as.factor(tdat$cluster)
+tdat$TIG <- as.factor(tdat$TIG)
+tdat$sample <- as.factor(tdat$sample)
+pvalues <- tdat %>% 
+  group_by(cluster) %>% 
+  summarise(p=wilcox.test(proportion~TIG)$p.value)
+tdat <- merge(tdat, pvalues, by.x = "cluster", by.y ="cluster", all.x = TRUE)
+tdat$p.wt <- paste0('p=',round(tdat$p, digits=3))
+
+#Boxplots
+p = ggplot(sample.comp, aes(x= TIG, y = proportion, fill=TIG))+
+  geom_boxplot(aes(fill=TIG))+
+  geom_point(position=position_dodge(width=0.75), aes(group=TIG))+
+  facet_wrap(~cluster, scales = "fixed", ncol = 8)+
+  stat_compare_means(method = "wilcox.test", aes(label=..p.format..))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank(),
+        strip.background = element_blank())+
+  ylab("Of total myeloid cells [%]")
+
+pdf(paste0(out.path, "Fig4S_cluster_frequency_boxplots.pdf"), width = 14, height = 5)
+p
+dev.off()
+
+#p-value dot plot
+mean <- tdat %>% 
+  group_by(cluster, TIG) %>% 
+  summarise(mean = mean(proportion))
+mean <- spread(mean, key = "TIG", value = "mean")
+delta_mean <- mean %>% 
+  group_by(cluster) %>% 
+  summarise(delta = TIG2-TIG3)
+pvalues$delta <- delta_mean$delta
+
+pvalues$padj <- ifelse(pvalues$delta > 0, log10(pvalues$p), -log10(pvalues$p))
+pvalues$TIG <- ifelse(pvalues$delta > 0, "TIG2", "TIG3")
+pvalues$cluster <- fct_rev(pvalues$cluster)
+
+p <- ggplot(pvalues, aes(padj, cluster))+
+  geom_point(aes(color=TIG))+
+  xlab("-log10(p)")+
+  geom_vline(xintercept = log10(0.05), linetype="dashed")+
+  geom_vline(xintercept = -log10(0.05), linetype="dashed")+
+    theme(axis.ticks.y = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        legend.background = element_blank())
+
+pdf(paste0(out.path, "Fig4_cluster_frequency_p.pdf"), width = 4, height = 5)
+p
+dev.off()
+
+
+
+### Cluster frequencies by NA treatment ###
+sample.comp <- as.data.frame(prop.table(x=table(all.myeloid$cluster, all.myeloid$orig.ident), margin=2))
+colnames(sample.comp) <- c("cluster", "sample", "proportion")
+sample.comp$NA_treatment <- ifelse(sample.comp$sample  == "TBB171" | sample.comp$sample == "TBB165", "yes", "no")
+
+# Calculate Wilcoxon Test
+tdat <- as.data.table(sample.comp)
+tdat$cluster <- as.factor(tdat$cluster)
+tdat$sample <- as.factor(tdat$sample)
+pvalues <- tdat %>% 
+  group_by(cluster) %>% 
+  summarise(p=wilcox.test(proportion~NA_treatment)$p.value)
+tdat <- merge(tdat, pvalues, by.x = "cluster", by.y ="cluster", all.x = TRUE)
+tdat$p.wt <- paste0('p=',round(tdat$p, digits=3))
+
+#Boxplots
+p = ggplot(tdat, aes(x= NA_treatment, y = proportion, fill=NA_treatment))+
+  geom_boxplot()+
+  geom_point(size = 2, pch=21, color = "black")+
+  facet_wrap(~cluster+p.wt, scales="fixed", ncol=8, strip.position="bottom")+
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x=element_blank(),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        strip.background = element_blank(),
+        legend.background = element_blank())+
+  ylab("Of total myeloid cells [%]")+
+  xlab("cluster")
+
+pdf(paste0(out.path, "Fig4S_cluster_frequency_NAtreament_boxplots.pdf"), width = 12, height = 5)
+p
+dev.off()
+```
+
+### Cluster frequencies by grade
+
+```{r cluster-freq-grade}
+clinical_data <- read.csv("Y://Code/10x/10x_Run1_Run2_Pilot_comb/output/clinical_data.csv")
+clinical_data$Patient_ID <- paste0("T", clinical_data$Patient_ID)
+
+lowG <- clinical_data[clinical_data$Grade %in% c("G1", "G2"),]$Patient_ID
+highG <- clinical_data[clinical_data$Grade %in% c("G3"),]$Patient_ID
+
+sample.comp <- as.data.frame(prop.table(x=table(all.myeloid$cluster, all.myeloid$orig.ident), margin=2))
+colnames(sample.comp) <- c("cluster", "sample", "proportion")
+sample.comp$Grade <- ifelse(sample.comp$sample %in% lowG, "G1/G2", "G3")
+
+# Wilcoxon test
+tdat <- as.data.table(sample.comp)
+tdat$cluster <- as.factor(tdat$cluster)
+tdat$Grade <- as.factor(tdat$Grade)
+tdat$sample <- as.factor(tdat$sample)
+pvalues <- tdat %>% 
+  group_by(cluster) %>% 
+  summarise(p=wilcox.test(proportion~Grade)$p.value)
+tdat <- merge(tdat, pvalues, by.x = "cluster", by.y ="cluster", all.x = TRUE)
+tdat$p.wt <- paste0('p=',round(tdat$p, digits=3))
+
+#Boxplots
+p = ggplot(tdat, aes(x= Grade, y = proportion, fill=Grade))+
+  geom_boxplot()+
+  geom_point(size = 2, pch=21, color = "black")+
+  facet_wrap(~cluster+p.wt, scales="fixed", ncol=10, strip.position="bottom")+
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x=element_blank(),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        strip.background = element_blank(),
+        legend.background = element_blank())+
+  ylab("Of total T/NK cells [%]")+
+  xlab("cluster")
+
+
+#p-value dot plot
+mean <- tdat %>% 
+  group_by(cluster, Grade) %>% 
+  summarise(mean = mean(proportion))
+mean <- spread(mean, key = "Grade", value = "mean")
+delta_mean <- mean %>% 
+  group_by(cluster) %>% 
+  summarise(delta = `G1/G2` - G3)
+pvalues$delta <- delta_mean$delta
+
+pvalues$padj <- ifelse(pvalues$delta > 0, log10(pvalues$p), -log10(pvalues$p))
+pvalues$Grade <- ifelse(pvalues$delta > 0, "G1/G2", "G3")
+pvalues$cluster <- fct_rev(pvalues$cluster)
+
+p <- ggplot(pvalues, aes(padj, cluster))+
+  geom_point(aes(color=Grade))+
+  xlab("-log10(p)")+
+  geom_vline(xintercept = log10(0.05), linetype="dashed")+
+  geom_vline(xintercept = -log10(0.05), linetype="dashed")+
+    theme(axis.ticks.y = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        legend.background = element_blank())+
+  xlim(-2,2)
+
+```
+
+## Metacluster frequency
+
+```{r}
+sample.comp$metacluster <- sample.comp$cluster
+levels(sample.comp$metacluster) <- factor(c(rep("Monocyte",2), rep("TAM",7), rep("DC",5), "M-proliferating"))
+sample.comp.meta <- sample.comp[,-1]
+
+sample.comp.meta <- sample.comp.meta %>%
+  group_by(sample, metacluster) %>%
+  summarize(proportion.meta = sum(proportion))
+
+sample.comp.meta$TIG <- ifelse(sample.comp.meta$sample == "TBB129" | sample.comp.meta$sample  == "TBB171" | sample.comp.meta$sample  == "TBB111" | sample.comp.meta$sample  == "TBB165" | sample.comp.meta$sample  == "TBB338" | sample.comp.meta$sample  == "TBB184" | sample.comp.meta$sample  == "TBB011", "TIG2", "TIG3")
+
+#Boxplots
+p = ggplot(sample.comp.meta, aes(x= TIG, y = proportion.meta, fill=TIG))+
+  geom_boxplot()+
+  geom_point(size = 2, pch=21, color = "black")+
+  facet_wrap(~metacluster, scales="fixed", ncol=10, strip.position="bottom")+
+  stat_compare_means(method = "wilcox.test", aes(label=..p.format..))+
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x=element_blank(),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        strip.background = element_blank(),
+        legend.background = element_blank())+
+  ylab("Of total myeloid cells [%]")
+```
+
+
+## Cluster average heatmap of Top10 DE genes
+
+```{r}
+## Calculate cluster averages
+Idents(all.myeloid) <- all.myeloid$cluster
+cluster.averages.table <- AverageExpression(object = all.myeloid, return.seurat = FALSE, assays = "RNA")
+RNA.average <- as.matrix(cluster.averages.table[[1]])
+#Normalize between 0 and 1
+RNA.average.norm <- apply(RNA.average, 1, function(x)(x-min(x))/(max(x)-min(x)))
+RNA.average.znorm <- apply(RNA.average, 1, function(x)(x - mean(x)) / sd(x))
+
+
+# Differential expression analysis (using MAST)
+Idents(all.myeloid) <- all.myeloid$cluster
+cluster.markers <- FindAllMarkers(object = all.myeloid, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use="MAST", verbose = TRUE)
+write.csv(cluster.markers, file = paste0(in.path, "DE_clusternames_all_MAST.csv"), row.names = FALSE)
+marker.genes <- cluster.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+write.csv(marker.genes, file = paste0(in.path, "DE_clusternames_all_MAST_Top10.csv"), row.names = TRUE)
+
+## Extrakt marker genes
+all.marker.genes <- read.csv(file = paste0(in.path, "DE_clusternames_all_MAST.csv"))
+marker.genes <- all.marker.genes %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+features <- marker.genes$gene
+features.cluster <- marker.genes[,6:7]
+colnames(features.cluster) <- c('cluster_expressed', 'gene')
+DEgenes <- as.character(features.cluster$gene)
+
+## Plot the heatmap
+col_split <- factor(c(rep("Monocyte",2), rep("TAM",7), rep("DC",5), "M-proliferating"))
+col_split <- factor(col_split, levels = levels(col_split)[c(2,4,1,3)])
+
+p = Heatmap(t(subset(RNA.average.norm, select=unique(DEgenes))), show_row_names = TRUE, row_dend_side = "left", heatmap_legend_param = list(title = "Normalized\nmean counts"), col=viridis(100), cluster_rows = FALSE, cluster_columns=FALSE, row_names_side = "left", column_names_side = "top", column_names_rot = 90, column_dend_side = "bottom", row_names_gp = gpar(fontsize = 6), cluster_column_slices = FALSE, column_split = col_split)
+
+```
+
+## Cluster average heatmap of specific markers
+
+```{r}
+features_cytof_TAM = c('CD68', 'CD14', 'CD274', 'CCR7', 'HLA-DRA', 'MRC1', 'SIGLEC1', 'MSR1', 'CD163', 'FCGR2A', 'FCGR2B', 'FCGR2C', 'FCGR1A', 'CD4', 'ITGAM', 'ITGAX', 'FCGR3A', 'CD93', 'IL3RA', 'CD86', 'CD36', 'CD38', 'CCR2', 'SLAMF7', "CD33", "CCL18")
+
+features_clusters <- c("S100A8", "S100A9", "EREG", "FCN1", "APOBEC3A", "CD55", "FN1", "C5AR1", "VEGFA", "CD300E", "TNF", "CCL3", "CCL4", "IL10", "C1QA",  "CXCL8", "CXCL2", "CXCL3", "CXCL9", "CXCL10", "IFIT1", "GBP1", "TNFSF10", "CCL8", "APOC1", "APOE", "CTSD", "FTL", "CSTB", "MARCO", "FBP1", "SPP1", "MMP9", "MMP12", "TMEM176A", "TNFRSF9", "IL6", "NKG7", "CLEC4E", "MT1E", "MT2A", "HLA-DQB2", "CD1A", "CD207", "S100B", "NDRG2", "CLEC9A", "CPVL", "IRF8", "CPNE3", "CCND1", "CLEC10A", "CD1C", "CD1E", "FCER1A", "HLA-DQA1", "JAML", "CCR7", "LAMP3", "FSCN1","CCL19", "CCL17", "GZMB", "PLAC8", "LAMP5", "IRF7", "TCF4", "MKI67", "CENPF", "STMN1", "TUBB")
+
+p = Heatmap(t(subset(RNA.average.norm, select=features_cytof_TAM)), show_row_names = TRUE, row_dend_side = "left", heatmap_legend_param = list(title = "Normalized\nmean counts"), col=viridis(100), cluster_rows = FALSE, cluster_columns=FALSE, row_names_side = "left", column_names_side = "top", column_names_rot = 90, column_dend_side = "bottom", row_names_gp = gpar(fontsize = 6), cluster_column_slices = FALSE, column_split = col_split)
+```
+

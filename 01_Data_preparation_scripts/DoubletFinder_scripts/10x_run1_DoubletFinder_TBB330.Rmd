@@ -1,0 +1,175 @@
+---
+title: "10x_run1_DoubletFinder"
+author: "SandraTietscher"
+date: "2019 M06 17"
+output: html_document
+---
+
+
+## Load libraries and data
+
+```{r}
+if (!require(ggplot2)) install.packages('ggplot2')
+library(ggplot2)
+
+if (!require(dplyr)) install.packages('dplyr')
+library(dplyr)
+
+if (!require(Seurat)) install.packages('Seurat')
+library(Seurat)
+
+if (!require(DoubletFinder)) devtools::install_github('chris-mcginnis-ucsf/DoubletFinder')
+library(DoubletFinder)
+
+#if (!require(reticulate)) install.packages("reticulate")
+#library(reticulate)
+#use_condaenv("r-reticulate")
+#conda_install("r-reticulate", "umap-learn")
+#reticulate::py_install(packages ='umap-learn')
+#use_python("C:/Users/SandraT/AppData/Local/Continuum/anaconda3/envs/r-reticulate/python.exe")
+#umap-learn <- import("umap-learn")
+
+in.path = "~/Data/Sequencing_data/10x_pilot/"
+out.path = "~/Code/10x/DoubletFinder/output/TBB330/"
+TBB330.data <- Read10X(paste0(in.path, "TBB330/filtered_feature_bc_matrix"))
+```
+
+# Individual Sample preprocessing
+
+```{r}
+
+# Create Seurat object
+TBB330 <- CreateSeuratObject(counts = TBB330.data, min.cells = 5, min.features = 200, project = "TBB330")
+TBB330 <- AddMetaData(TBB330, "TIG3", col.name = 'TIG')
+TBB330 <- AddMetaData(TBB330, "pilot", col.name = 'batch')
+rm(TBB330.data)
+
+# Calculate mitotic percentage
+mito.features <- grep(pattern = "^MT-", x = rownames(x = TBB330), value = TRUE)
+percent.mito <- Matrix::colSums(x = GetAssayData(object = TBB330, slot = 'counts')[mito.features, ]) / Matrix::colSums(x = GetAssayData(object = TBB330, slot = 'counts'))
+TBB330[['percent.mito']] <- percent.mito
+
+# Pre-process Seurat object
+TBB330 <- NormalizeData(TBB330)
+TBB330 <- ScaleData(TBB330)
+TBB330 <- FindVariableFeatures(TBB330, x.low.cutoff = 0.0125, y.cutoff = 0.25, do.plot=FALSE)
+TBB330 <- RunPCA(TBB330, features = VariableFeatures(object = TBB330), verbose = FALSE)
+#TBB330 <- RunTSNE(object = TBB330, dims = 1:10)
+TBB330 <- RunUMAP(object = TBB330, dims = 1:10)
+
+#explore PCA
+DimHeatmap(object = TBB330, dims = 10:30, cells = 500, balanced = TRUE)
+ElbowPlot(object = TBB330, ndim = 30)
+
+
+#FeaturePlot(TBB330, reduction = 'umap', features = "nFeature_RNA")
+#DimPlot(TBB330, label = TRUE, group.by = "RNA_snn_res.0.4")
+#DimPlot(TBB330, label = TRUE, reduction = 'tsne')
+```
+
+## Graph-based clustering
+Low resolution clustering as basis for homotypic doublet model.
+
+```{r}
+TBB330 <- FindNeighbors(object = TBB330, dims = 1:10)
+TBB330 <- FindClusters(object = TBB330, resolution = 0.4)
+
+#VlnPlot(object = TBB330, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3, pt.size = 0, sort = FALSE)
+#FeaturePlot(TBB330, reduction = 'umap', features = c("CD3E", "CD14", "PTPRC", "EPCAM", "PECAM1", "FAP"))
+```
+## Assigning cell type identity to clusters
+
+```{r}
+#Read in table with cluster ids
+cluster.ids <- read.csv(file = paste0(out.path, "cluster_celltype.csv"))
+
+new.cluster.ids <- cluster.ids$celltype
+new.cluster.ids <- as.character(new.cluster.ids)
+names(x = new.cluster.ids) <- levels(x = TBB330)
+TBB330 <- RenameIdents(object = TBB330, new.cluster.ids)
+
+#Save celltype information in metadata
+TBB330[["annotation"]] <- Idents(object = TBB330)
+
+# plot_celltype 
+DimPlot(object = TBB330, reduction = 'umap', label = FALSE, pt.size = 0.5, group.by = "annotation")
+```
+## pK identification
+
+```{r}
+
+#sweep.res.list_TBB330 <- paramSweep_v3(TBB330, PCs = 1:10)
+#sweep.stats_TBB330 <- summarizeSweep(sweep.res.list_TBB330, GT = FALSE)
+#bcmvn_TBB330 <- find.pK(sweep.stats_TBB330)
+
+```
+
+## Homotypic Doublet Proportion Estimate 
+```{r}
+annotations <- TBB330@meta.data$annotation
+homotypic.prop <- modelHomotypic(annotations)           ## ex: annotations ~ number of cell types present
+nExp_poi <- round(0.07*length(TBB330@meta.data$nFeature_RNA))  ## Assuming 7% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+```
+
+
+## Run DoubletFinder with varying classification stringencies 
+```{r}
+TBB330 <- doubletFinder_v3(TBB330, PCs = 1:15, pN = 0.25, pK = 0.005, nExp = nExp_poi, reuse.pANN = FALSE)
+TBB330 <- doubletFinder_v3(TBB330, PCs = 1:15, pN = 0.25, pK = 0.005, nExp = nExp_poi.adj, reuse.pANN = "pANN_0.25_0.005_687")
+```
+
+## Plot results 
+```{r}
+TBB330@meta.data[,"DF_hi.lo"] <- TBB330@meta.data$DF.classifications_0.25_0.005_687
+TBB330@meta.data$DF_hi.lo[which(TBB330@meta.data$DF_hi.lo == "Doublet" & TBB330@meta.data$DF.classifications_0.25_0.005_524 == "Singlet")] <- "Doublet_lo"
+TBB330@meta.data$DF_hi.lo[which(TBB330@meta.data$DF_hi.lo == "Doublet")] <- "Doublet_hi"
+UMAPPlot(TBB330, group.by="DF_hi.lo", plot.order=c("Doublet_hi","Doublet_lo","Singlet"), colors.use=c("black","gold","red"))
+
+#ggsave(file = paste0(out.path, 'DFplot_pk0.005.png'))
+```
+
+## Sanity checks
+
+```{r}
+
+# find all markers of cluster 15
+#cluster15.markers <- FindMarkers(object = TBB330, ident.1 = 15, min.pct = 0.25)
+#head(x = cluster15.markers, n = 15)
+
+DimPlot(TBB330, label = TRUE)
+DotPlot(object = TBB330, features = c("CD3E", "CD14", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB330, features = c("CD3E", "CD14", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB330, features = c("FAP", "PECAM1", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB330, features = c("CD14", "CD3E"))
+FeaturePlot(object = TBB330, features = c("MKI67"), split.by = "DF_hi.lo")
+
+FeatureScatter(TBB330, feature1 = "CD3E", feature2 = "CD14", group.by = "DF_hi.lo")
+ggsave(file = paste0(out.path, 'DF_pk0.005_CD3vsCD14.png'))
+
+VlnPlot(TBB330, features = "nFeature_RNA", group.by = "DF_hi.lo", pt.size = 0)
+
+table(TBB330@meta.data$DF_hi.lo, TBB330@meta.data$RNA_snn_res.0.4)
+```
+
+## Create a subset excluding high-confidence doublets
+```{r}
+Idents(TBB330) <- TBB330@meta.data$DF_hi.lo
+
+# Create a Seurat object with only the immune cell clusters
+TBB330.singlet <- subset(x = TBB330, idents = c("Singlet", "Doublet_lo"))
+
+TBB330.singlet$RNA_snn_res.0.4 <- NULL
+TBB330.singlet$seurat_clusters <- NULL
+TBB330.singlet$annotation <- NULL
+TBB330.singlet$DF_hi.lo<- NULL
+TBB330.singlet$pANN_0.25_0.005_687<- NULL
+TBB330.singlet$DF.classifications_0.25_0.005_687<- NULL
+TBB330.singlet$DF.classifications_0.25_0.005_524<- NULL
+
+#Test
+DimPlot(object = TBB330.singlet, reduction = 'tsne', pt.size = 0.5)
+
+#Save Seurat object
+saveRDS(TBB330.singlet, file = paste0(out.path, "TBB330_singlet.rds"))
+```

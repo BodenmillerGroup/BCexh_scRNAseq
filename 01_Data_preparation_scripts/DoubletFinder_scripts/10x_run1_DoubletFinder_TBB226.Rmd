@@ -1,0 +1,165 @@
+---
+title: "10x_run1_DoubletFinder"
+author: "SandraTietscher"
+date: "2019 M06 17"
+output: html_document
+---
+
+
+## Load libraries and data
+
+```{r}
+if (!require(ggplot2)) install.packages('ggplot2')
+library(ggplot2)
+
+if (!require(dplyr)) install.packages('dplyr')
+library(dplyr)
+
+if (!require(Seurat)) install.packages('Seurat')
+library(Seurat)
+
+if (!require(DoubletFinder)) devtools::install_github('chris-mcginnis-ucsf/DoubletFinder')
+library(DoubletFinder)
+
+#if (!require(reticulate)) install.packages("reticulate")
+#library(reticulate)
+#use_condaenv("r-reticulate")
+#conda_install("r-reticulate", "umap-learn")
+#reticulate::py_install(packages ='umap-learn')
+#use_python("C:/Users/SandraT/AppData/Local/Continuum/anaconda3/envs/r-reticulate/python.exe")
+#umap-learn <- import("umap-learn")
+
+in.path = "~/RNAseq/fgcz/ST_TAMsBC_10x_Run01/CellRangerCount_37250_2019-05-27--16-31-27/"
+out.path = "~/Code/10x/10x_Run1_Pilot_comb/output/DoubletFinder/TBB226/"
+TBB226.data <- Read10X(paste0(in.path, "T_BB226/filtered_feature_bc_matrix"))
+```
+
+# Individual Sample preprocessing
+
+```{r}
+
+# Create Seurat object
+TBB226 <- CreateSeuratObject(counts = TBB226.data, min.cells = 5, min.features = 200, project = "TBB226")
+TBB226 <- AddMetaData(TBB226, "TIG3", col.name = 'TIG')
+TBB226 <- AddMetaData(TBB226, "B3", col.name = 'batch')
+rm(TBB226.data)
+
+# Calculate mitotic percentage
+mito.features <- grep(pattern = "^MT-", x = rownames(x = TBB226), value = TRUE)
+percent.mito <- Matrix::colSums(x = GetAssayData(object = TBB226, slot = 'counts')[mito.features, ]) / Matrix::colSums(x = GetAssayData(object = TBB226, slot = 'counts'))
+TBB226[['percent.mito']] <- percent.mito
+
+# Pre-process Seurat object
+TBB226 <- NormalizeData(TBB226)
+TBB226 <- ScaleData(TBB226)
+TBB226 <- FindVariableFeatures(TBB226, x.low.cutoff = 0.0125, y.cutoff = 0.25, do.plot=FALSE)
+TBB226 <- RunPCA(TBB226, features = VariableFeatures(object = TBB226), verbose = FALSE)
+TBB226 <- RunTSNE(object = TBB226, dims = 1:10)
+TBB226 <- RunUMAP(object = TBB226, dims = 1:10)
+
+#explore PCA
+DimHeatmap(object = TBB226, dims = 10:30, cells = 500, balanced = TRUE)
+ElbowPlot(object = TBB226, ndim = 30)
+
+
+FeaturePlot(TBB226, reduction = 'umap', features = "nFeature_RNA")
+DimPlot(TBB226, label = TRUE, group.by = "RNA_snn_res.0.4")
+DimPlot(TBB226, label = TRUE, reduction = 'tsne')
+```
+
+## Graph-based clustering
+Low resolution clustering as basis for homotypic doublet model.
+
+```{r}
+TBB226 <- FindNeighbors(object = TBB226, dims = 1:10)
+TBB226 <- FindClusters(object = TBB226, resolution = 0.4)
+
+VlnPlot(object = TBB226, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3, pt.size = 0, sort = FALSE)
+FeaturePlot(TBB226, reduction = 'umap', features = c("CD3E", "CD14", "PTPRC", "EPCAM", "PECAM1", "FAP"))
+```
+## Assigning cell type identity to clusters
+
+```{r}
+#Read in table with cluster ids
+cluster.ids <- read.csv(file = paste0(out.path, "cluster_celltype.csv"))
+
+new.cluster.ids <- cluster.ids$celltype
+new.cluster.ids <- as.character(new.cluster.ids)
+names(x = new.cluster.ids) <- levels(x = TBB226)
+TBB226 <- RenameIdents(object = TBB226, new.cluster.ids)
+
+#Save celltype information in metadata
+TBB226[["annotation"]] <- Idents(object = TBB226)
+
+# plot_celltype 
+DimPlot(object = TBB226, reduction = 'umap', label = FALSE, pt.size = 0.5, group.by = "annotation")
+```
+## pK identification
+
+```{r}
+
+sweep.res.list_TBB226 <- paramSweep_v3(TBB226, PCs = 1:10)
+sweep.stats_TBB226 <- summarizeSweep(sweep.res.list_TBB226, GT = FALSE)
+bcmvn_TBB226 <- find.pK(sweep.stats_TBB226)
+
+```
+
+## Homotypic Doublet Proportion Estimate 
+```{r}
+annotations <- TBB226@meta.data$annotation
+homotypic.prop <- modelHomotypic(annotations)           ## ex: annotations ~ number of cell types present
+nExp_poi <- round(0.07*length(TBB226@meta.data$nFeature_RNA))  ## Assuming 7% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+```
+
+
+## Run DoubletFinder with varying classification stringencies 
+```{r}
+TBB226 <- doubletFinder_v3(TBB226, PCs = 1:15, pN = 0.25, pK = 0.005, nExp = nExp_poi, reuse.pANN = FALSE)
+TBB226 <- doubletFinder_v3(TBB226, PCs = 1:15, pN = 0.25, pK = 0.005, nExp = nExp_poi.adj, reuse.pANN = "pANN_0.25_0.005_709")
+```
+
+## Plot results 
+```{r}
+TBB226@meta.data[,"DF_hi.lo"] <- TBB226@meta.data$DF.classifications_0.25_0.005_709
+TBB226@meta.data$DF_hi.lo[which(TBB226@meta.data$DF_hi.lo == "Doublet" & TBB226@meta.data$DF.classifications_0.25_0.005_595 == "Singlet")] <- "Doublet_lo"
+TBB226@meta.data$DF_hi.lo[which(TBB226@meta.data$DF_hi.lo == "Doublet")] <- "Doublet_hi"
+UMAPPlot(TBB226, group.by="DF_hi.lo", plot.order=c("Doublet_hi","Doublet_lo","Singlet"), colors.use=c("black","gold","red"))
+
+ggsave(file = paste0(out.path, 'DFplot_pk0.005.png'))
+```
+
+## Sanity checks
+
+```{r}
+
+# find all markers of cluster 15
+#cluster15.markers <- FindMarkers(object = TBB226, ident.1 = 15, min.pct = 0.25)
+#head(x = cluster15.markers, n = 15)
+
+DimPlot(TBB226, label = TRUE)
+DotPlot(object = TBB226, features = c("CD3E", "CD14", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB226, features = c("CD3E", "CD14", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB226, features = c("FAP", "PECAM1", "PTPRC", "EPCAM"))
+FeaturePlot(object = TBB226, features = c("CD14", "CD3E"))
+FeaturePlot(object = TBB226, features = c("MKI67"), split.by = "DF_hi.lo")
+
+FeatureScatter(TBB226, feature1 = "CD3E", feature2 = "CD14", group.by = "DF_hi.lo")
+ggsave(file = paste0(out.path, 'DF_pk0.005_CD3vsCD14.png'))
+
+table(TBB226@meta.data$DF_hi.lo, TBB226@meta.data$RNA_snn_res.0.4)
+```
+
+## Create a subset excluding high-confidence doublets
+```{r}
+Idents(TBB226) <- TBB226@meta.data$DF_hi.lo
+
+# Create a Seurat object with only the immune cell clusters
+TBB226.singlet <- SubsetData(object = TBB226, ident.use = c("Singlet", "Doublet_lo"))
+
+#Test
+DimPlot(object = TBB226.singlet, reduction = 'tsne', pt.size = 0.5)
+
+#Save Seurat object
+saveRDS(TBB226.singlet, file = paste0(out.path, "TBB226_singlet.rds"))
+```

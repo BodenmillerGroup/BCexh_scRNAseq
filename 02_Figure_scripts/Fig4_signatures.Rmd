@@ -1,0 +1,396 @@
+---
+title: "Fig4_signatures"
+author: "Sandra Tietscher"
+date: "5/5/2020"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(magrittr)
+library(viridis)
+library(patchwork)
+library(ggrepel)
+library(ggpubr)
+
+in.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/myeloid/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/Fig4/" 
+all.myeloid <- readRDS(file= paste0(in.path, "myeloid_excl_cl9.rds"))
+```
+
+## Define signature genes
+
+```{r}
+T_attr <- c("CCL21", "CCL17",  "CCL2", "CXCL9", "CXCL10", "CXCL11", "CXCL12", "CCL3", "CCL4", "CCL5", "CXCL16")
+
+T_supp <- c("CD80", "CD86", "IDO1", "CD274", "PDCD1LG2",  "TNFSF10", "HLA-E", "HLA-G", "VTCN1", "IL10", "TGFB1", "TGFB2", "PTGS2", "PTGES", "LGALS9", "CCL22")
+
+M1_features <- c("NOS2", "IL12A", "IL12B", "FCGR1A", "FCGR1B", "CD80", "IL23A", "CXCL9", "CXCL10", "CD86", "IL1A", "IL1B", "IL6", "TNF", "CCL5", "IRF5", "IRF1", "CD40", "IDO1", "KYNU", "CCR7" )
+
+M2_features <- c("ARG2", "IL10", "FCGR2A", "FCGR2B", "FCGR2C", "CD200R1", "PDCD1LG2", "CD274", "MARCO", "CSF1R", "MRC1", "IL1RN", "IL1R2", "IL4R", "CCL4", "CCL13", "CCL20", "CCL17", "CCL18", "CCL22", "LYVE1", "VEGFA", "VEGFB", "VEGFC", "VEGFD", "EGF", "CTSA", "CTSB", "CTSC", "CTSD","TGFB1", "TGFB2", "TGFB3", "MMP14", "MMP19", "MMP9", "CLEC7A", "WNT7B", "FASLG", "TNFSF12", "TNFSF8", "CD276", "VTCN1", "MSR1", "FN1", "IRF4")
+
+# Signature of 15 random genes (as a control)
+set.seed(20201130)
+random <- sample(rownames(all.myeloid), 15)
+```
+
+### Calculate T-cell-associated signatures using log-transformation of percentages for each gene
+To avoid dominance of few genes when calculating the signature score: Log-normalization
+
+1. For each cell, divide counts of gene i through total counts to get percentages
+2. Multiply each percentage by 100.000 (to get only numbers > 1)
+3. Apply log-transformation to each percentage
+4. Calculate signature score by summing up log-transformed percentages of each gene in the signature
+
+```{r}
+
+
+#Multiply all values by 100000 before taking the log, in order not to have any value below 1 (and thus no log-value below 0)
+log100000 <- function(x) {
+  y <- log(x*100000)
+  return(y)
+}
+
+#initialize tables
+score = NULL
+score$cells <- all.myeloid@assays[["RNA"]]@data@Dimnames[[2]]
+attr.score <- as.data.frame(score)
+supp.score <- as.data.frame(score)
+
+#calculate values for each feature and add to tables
+for (i in T_attr) {
+    percent.i <- GetAssayData(object=all.myeloid[["RNA"]], slot = 'counts')[i,] / Matrix::colSums(x = GetAssayData(object = all.myeloid[["RNA"]], slot = 'counts'))
+    logpercent.i <- sapply(percent.i, FUN = log100000)
+    logpercent.i <- ifelse(logpercent.i == "-Inf" | logpercent.i == "Inf", 0, logpercent.i)
+    logpercent.i <- as.data.table(logpercent.i)
+    colnames(logpercent.i) <- i
+    attr.score <- cbind(attr.score, logpercent.i)
+}
+
+for (i in T_supp) {
+    percent.i <- GetAssayData(object=all.myeloid[["RNA"]], slot = 'counts')[i,] / Matrix::colSums(x = GetAssayData(object = all.myeloid[["RNA"]], slot = 'counts'))
+    logpercent.i <- sapply(percent.i, FUN = log100000)
+    logpercent.i <- ifelse(logpercent.i == "-Inf" | logpercent.i == "Inf", 0, logpercent.i)
+    logpercent.i <- as.data.table(logpercent.i)
+    colnames(logpercent.i) <- i
+    supp.score <- cbind(supp.score, logpercent.i)
+}
+
+#sum up all values per cell and attach to Seurat object metadata
+rownames(attr.score) <- attr.score$cells
+attr.score$cells <- NULL
+attr.score$sum <- rowSums(attr.score)
+all.myeloid$attr <- attr.score$sum
+
+rownames(supp.score) <- supp.score$cells
+supp.score$cells <- NULL
+supp.score$sum <- rowSums(supp.score)
+all.myeloid$supp <- supp.score$sum
+```
+
+### Calculate contribution of each gene to the T-cell-associated signatures after log-normalization
+
+```{r}
+# calculate contribution of each gene to the log-normalized attr/supp scores
+logGeneContribution <- function(object, gene) {
+  contrib.cell <- object[,gene]/object[,"sum"]
+  contrib.cell <- ifelse(contrib.cell == "-Inf", 0, contrib.cell)
+  contr.gene <- mean(contrib.cell, na.rm = TRUE)
+  return(contr.gene)
+}
+
+supp_contr <- sapply(T_supp, logGeneContribution, object=supp.score)
+names(supp_contr) <- T_supp
+head(supp_contr)
+
+attr_contr <- sapply(T_attr, logGeneContribution,object=attr.score)
+names(attr_contr) <- T_attr
+head(attr_contr)
+
+
+## Plot
+supp.df <- data.frame(gene = T_supp, contribution = supp_contr)
+p_contr_supp = ggplot(supp.df, aes(x=gene, y=contribution))+
+  geom_col()+
+  theme(panel.background = element_blank())+
+  coord_flip()
+
+attr.df <- data.frame(gene = T_attr, contribution = attr_contr)
+p_contr_attr = ggplot(attr.df, aes(x=gene, y=contribution))+
+  geom_col()+
+  theme(panel.background = element_blank())+
+  coord_flip()
+
+pdf(paste0(out.path, "Fig4S_M1M2_gene_contribution.pdf"), width = 10, height = 15)
+p <- p_contr_supp / p_contr_attr
+p
+dev.off()
+```
+
+## Single cell plots
+
+```{r}
+attr_supp_sc <- all.myeloid[[c("attr", "supp", "TIG", "orig.ident", "cluster", "metacluster")]]
+
+#Randomize rows for plotting
+attr_supp_sc_random <- attr_supp_sc[sample(nrow(attr_supp_sc)),]
+
+## Single Cell Scatterplot
+p = ggplot(attr_supp_sc_random, aes(x=attr, y=supp)) +
+  geom_point(aes(color=TIG), alpha = 0.5, size = 1)+
+  geom_smooth(method = lm, se =TRUE, color = "black")+
+  stat_cor(method="spearman")+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+
+## Cluster-based Boxplot
+colnames(attr_supp_sc) <- c("attr", "supp", "TIG", "sample", "cluster", "metacluster")
+attr_supp_sc_gat <- gather(attr_supp_sc, "attr", "supp", key= "signature", value="signature_value")
+
+p = ggplot(attr_supp_sc_gat, aes(x=cluster, y=signature_value))+
+  geom_boxplot( width=0.8, aes(fill=metacluster))+
+  facet_wrap(~signature, scales = "free")+
+  theme(panel.background = element_blank(),
+        axis.text.x = element_text(angle=90, hjust = 1))
+
+pdf(paste0(out.path, "Fig4S_attrsupp_scBoxplots_cluster.pdf"), width = 10, height = 8)
+p
+dev.off()
+
+## TIG comparison
+p1 = ggplot(attr_supp_sc_gat, aes(x=signature, y =signature_value, fill = TIG))+
+  facet_wrap(~signature, scales = "free")+
+  geom_violin(aes(fill=TIG))+
+  geom_boxplot(position=position_dodge(width=0.9), width=0.1, color="black", aes(fill=TIG))+
+  stat_compare_means(method = "wilcox.test", aes(label=..p.signif..))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_blank())
+```
+
+## Cluster means
+
+```{r}
+# Get mean attr and supp percentages per cluster
+Idents(all.myeloid) <- all.myeloid$cluster
+attrsupp_means <- data.frame(attr_signature = double(),
+                              supp_signature = double())
+clusterlist <- levels(all.myeloid$cluster)
+
+for (i in clusterlist) {
+  cluster.i <- subset(x= all.myeloid, idents = i)
+  newline <- c(mean(cluster.i$attr), mean(cluster.i$supp))
+  attrsupp_means <- rbind(attrsupp_means, newline)
+  rm(cluster.i)
+}
+
+attrsupp_means$cluster <- clusterlist
+colnames(attrsupp_means) <- c("attr_signature", "supp_signature", "cluster")
+#write.csv(attrsupp_means, file = paste0(out.path, "cluster_means_excl_cl9.csv"), row.names=FALSE)
+
+##add metacluster ids
+attrsupp_means$metacluster <- c(rep("Monocyte",2), rep("TAM",7), rep("DC",5), "M-proliferating")
+
+#Scatterplot of cluster means
+p = ggplot(attrsupp_means, aes(x=attr_signature, y=supp_signature)) +
+  geom_point(aes(color=metacluster), size=3)+
+  geom_text_repel(label=attrsupp_means$cluster)+
+  geom_smooth(method = lm, color = "black", se=FALSE)+
+  stat_cor(method="spearman")+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())+
+  xlab("Random 15 gene signature")
+
+```
+
+## Sample means
+
+```{r}
+# Get mean attr and supp percentages per patient
+Idents(all.myeloid) <- all.myeloid$orig.ident
+attrsupp_means <- data.frame(attr_signature = double(),
+                              supp_signature = double())
+patientlist <- levels(all.myeloid$orig.ident)
+
+for (i in patientlist) {
+  patient.i <- subset(x= all.myeloid, idents = i)
+  newline <- c(mean(patient.i$attr), mean(patient.i$supp))
+  attrsupp_means <- rbind(attrsupp_means, newline)
+  rm(patient.i)
+}
+
+attrsupp_means$patient <- patientlist
+colnames(attrsupp_means) <- c("attr_signature", "supp_signature", "patient")
+#write.csv(attrsupp_means, file = paste0(out.path, "patient_means_excl_cl9.csv"), row.names=FALSE)
+
+##add TIGs
+attrsupp_means$TIG <- c(rep("TIG2", 7), rep("TIG3", 7))
+
+#Scatterplot of cluster means
+p = ggplot(attrsupp_means, aes(x=attr_signature, y=supp_signature)) +
+  geom_point(aes(color=TIG), size=4)+
+  #geom_text_repel(label=attrsupp_means$patient)+
+  geom_smooth(method = lm, color = "black", se=FALSE)+
+  stat_cor(method="spearman")+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+## TIG comparison (patient-level)
+attrsupp_sample_gat <- gather(attrsupp_means, "attr_signature", "supp_signature", key= "signature", value="signature_value")
+
+p = ggplot(attrsupp_sample_gat, aes(x=TIG, y =signature_value, fill = TIG))+
+  geom_boxplot(aes(fill=TIG))+
+  geom_point(position=position_dodge(width=0.75), aes(group=TIG))+
+  facet_wrap(~signature)+
+  stat_compare_means(method = "wilcox.test", aes(label=..p.format..))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank(),
+        strip.background = element_blank())
+```
+
+### Calculate M1/M2 signatures using log-transformation of percentages for each gene
+To avoid dominance of few genes when calculating the signature score: Log-normalization
+
+1. For each cell, divide counts of gene i through total counts to get percentages
+2. Multiply each percentage by 100.000 (to get only numbers > 1)
+3. Apply log-transformation to each percentage
+4. Calculate signature score by summing up log-transformed percentages of each gene in the signature
+
+```{r}
+
+
+#Multiply all values by 100000 before taking the log, in order not to have any value below 1 (and thus no log-value below 0)
+log100000 <- function(x) {
+  y <- log(x*100000)
+  return(y)
+}
+
+#initialize tables
+score = NULL
+score$cells <- all.myeloid@assays[["RNA"]]@data@Dimnames[[2]]
+M1.score <- as.data.frame(score)
+M2.score <- as.data.frame(score)
+
+#calculate values for each feature and add to tables
+for (i in M1_features) {
+    percent.i <- GetAssayData(object=all.myeloid[["RNA"]], slot = 'counts')[i,] / Matrix::colSums(x = GetAssayData(object = all.myeloid[["RNA"]], slot = 'counts'))
+    logpercent.i <- sapply(percent.i, FUN = log100000)
+    logpercent.i <- ifelse(logpercent.i == "-Inf" | logpercent.i == "Inf", 0, logpercent.i)
+    logpercent.i <- as.data.table(logpercent.i)
+    colnames(logpercent.i) <- i
+    M1.score <- cbind(M1.score, logpercent.i)
+}
+
+for (i in M2_features) {
+    percent.i <- GetAssayData(object=all.myeloid[["RNA"]], slot = 'counts')[i,] / Matrix::colSums(x = GetAssayData(object = all.myeloid[["RNA"]], slot = 'counts'))
+    logpercent.i <- sapply(percent.i, FUN = log100000)
+    logpercent.i <- ifelse(logpercent.i == "-Inf" | logpercent.i == "Inf", 0, logpercent.i)
+    logpercent.i <- as.data.table(logpercent.i)
+    colnames(logpercent.i) <- i
+    M2.score <- cbind(M2.score, logpercent.i)
+}
+
+#sum up all values per cell and attach to Seurat object metadata
+rownames(M1.score) <- M1.score$cells
+M1.score$cells <- NULL
+M1.score$sum <- rowSums(M1.score)
+all.myeloid$M1 <- M1.score$sum
+
+rownames(M2.score) <- M2.score$cells
+M2.score$cells <- NULL
+M2.score$sum <- rowSums(M2.score)
+all.myeloid$M2 <- M2.score$sum
+```
+
+## Compare TIGs (sample means) for all 4 signatures
+
+```{r}
+# Get mean scores per patient
+Idents(all.myeloid) <- all.myeloid$orig.ident
+all_scores <- data.frame(attr_signature = double(),
+                      supp_signature = double(),
+                      M1_score = double(),
+                      M2_score = double())
+patientlist <- levels(all.myeloid$orig.ident)
+
+for (i in patientlist) {
+  patient.i <- subset(x= all.myeloid, idents = i)
+  newline <- c(mean(patient.i$attr), mean(patient.i$supp), mean(patient.i$M1), mean(patient.i$M2))
+  all_scores <- rbind(all_scores, newline)
+  rm(patient.i)
+}
+
+all_scores$patient <- patientlist
+colnames(all_scores) <- c("attr", "supp", "M1", "M2", "patient")
+
+#add TIGs
+all_scores$TIG <- c(rep("TIG2", 7), rep("TIG3", 7))
+
+## TIG comparison (patient-level)
+all_scores_gat <- gather(all_scores, "attr", "supp", "M1", "M2", key= "signature", value="signature_value")
+
+p = ggplot(all_scores_gat, aes(x=TIG, y =signature_value, fill = TIG))+
+  geom_boxplot(aes(fill=TIG))+
+  geom_point(position=position_dodge(width=0.75), aes(group=TIG))+
+  facet_wrap(~signature, scales = "free", ncol = 4)+
+  stat_compare_means(method = "wilcox.test", aes(label=..p.format..))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank(),
+        strip.background = element_blank())
+```
+
+### Single cell scatterplots
+
+```{r}
+M1M2_sc <- all.myeloid[[c("M1", "M2", "TIG", "orig.ident", "cluster", "metacluster")]]
+
+#Randomize rows for plotting
+M1M2_sc_random <- M1M2_sc[sample(nrow(M1M2_sc)),]
+
+## Single Cell Scatterplot
+p = ggplot(M1M2_sc_random, aes(x=M1, y=M2)) +
+  geom_point(aes(color=TIG), alpha = 0.5, size = 1)+
+  geom_smooth(method = lm, se =TRUE, color = "black")+
+  stat_cor(method="spearman")+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+```
+
+
+
+
+

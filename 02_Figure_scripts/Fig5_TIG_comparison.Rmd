@@ -1,0 +1,324 @@
+---
+title: "Fig5_TIG_comparison"
+author: "Sandra Tietscher"
+date: "6/3/2020"
+output: html_document
+---
+
+## Load libraries and data, tidy cell type levels
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(patchwork)
+library(ggpubr)
+library(SingleCellSignalR)
+library(igraph)
+library(viridis)
+
+path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/figures_for_paper/" 
+all.merged <- readRDS(file = paste0(path, "merged_complete_inclCelltype.rds"))
+
+#Set wd
+dir.orig <- "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/SCSR/Fig5_TIG_comparison/"
+
+# classify pDCs as myeloid cells for this large overview
+ct_levels <- levels(all.merged$cell.type)
+ct_levels[7] <- "mast cell/basophil"
+ct_levels[9] <- "myeloid"
+levels(all.merged$cell.type) <- ct_levels
+
+## reorder cell type levels
+old.levels <- levels(all.merged$cell.type)
+all.merged$cell.type <- factor(all.merged$cell.type, levels =  old.levels[c(6,4,3,1,2,5,7,8)])
+Idents(all.merged) <- all.merged$cell.type
+```
+
+
+## Detect paracrine  and autocrine interactions for each individual patient (broad cell types)
+
+
+```{r}
+patient.list <- c("TBB075", "TBB102", "TBB111", "TBB129", "TBB165", "TBB171", "TBB214", "TBB226", "TBB330", "TBB338", "TBB011", "TBB035", "TBB212", "TBB184")
+Idents(all.merged) <- all.merged$orig.ident
+
+LR.matrix.list <- vector(mode = "list", length = 14)
+names(LR.matrix.list) <- patient.list
+
+for (patient in patient.list) {
+  sub <- subset(all.merged, idents=patient)
+
+  dir <- (paste0(dir.orig, "all_celltypes/", patient))
+  dir.create(dir)
+  setwd(dir)
+  
+cluster = as.numeric(sub$cell.type)
+#c.names = levels(sub$cell.type)
+c.names = c("epithelial", "endothelial", "fibroblast", "TNK cell", "myeloid",  "Bcell",  "granulocyte", "PC")
+data = data.frame(sub[["RNA"]]@data)
+
+#################
+### paracrine ###
+#################
+
+##Calculate LR scores for each cell type combination
+#Set s.score to 0 in order to get the score for each LR pair that is present (whether "significant" or not)
+#Tolerance for autocrine/paracrine was set to 100%
+setwd(dir)
+signal.para <- cell_signaling(data, genes = rownames(data), cluster, int.type = "paracrine", c.names = c.names, s.score = 0.0, logFC = NULL,  species = "homo sapiens", tol = 1, write = TRUE, verbose = TRUE)
+
+### assemble "cell pair x LR pair" data frame ###
+signal.para <- lapply(signal.para, function(x) unique(x))
+signal.para <- lapply(signal.para, function(x) {rownames(x) <- paste0(x[,1], "_", x[,2]);x})
+signal.para <- lapply(signal.para, function(x) {x$LR <- paste0(x[,1], "_", x[,2]);x})
+signal.simple.para <- lapply(signal.para, function(x) x[,-c(1:3)])
+#pull everything together in one matrix per sample (cluster_pairs x LR_pairs)
+signal.simple.para <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), signal.simple.para)
+colnames(signal.simple.para) <- c("LR", names(signal.para))
+signal.simple.para[is.na(signal.simple.para)] <- 0
+
+
+#################
+### autocrine ###
+#################
+
+#Tolerance for autocrine/paracrine was set to 0%
+setwd(dir)
+signal.auto <- cell_signaling(data, genes = rownames(data), cluster, int.type = "autocrine", c.names = c.names, s.score = 0.0, logFC = NULL,  species = "homo sapiens", tol = 0, write = TRUE, verbose = TRUE)
+
+### assemble "cell pair x LR pair" data frame ###
+
+signal.auto <- lapply(signal.auto, function(x) unique(x))
+signal.auto <- lapply(signal.auto, function(x) {rownames(x) <- paste0(x[,1], "_", x[,2]);x})
+signal.auto <- lapply(signal.auto, function(x) {x$LR <- paste0(x[,1], "_", x[,2]);x})
+signal.simple.auto <- lapply(signal.auto, function(x) x[,-c(1:3)])
+#pull everything together in one matrix per sample (cluster_pairs x LR_pairs)
+signal.simple.auto <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), signal.simple.auto)
+colnames(signal.simple.auto) <- c("LR", names(signal.auto))
+signal.simple.auto[is.na(signal.simple.auto)] <- 0
+
+### subset only autocrine pairs ###
+signal.simple.auto <- signal.simple.auto[,c(1,2,11, 20, 29, 38, 47, 56, 65)]
+
+
+#############
+### merge ###
+#############
+
+LR_full <- merge(signal.simple.para, signal.simple.auto, by = "LR", all = TRUE)
+## Exclude interaction pairs that are clearly not extracellular/surface: Heat-Shock Proteins, Ubiquitin-related, RPS
+exclude_list <- c("HSP", "UBB", "UBC", "UBA", "RPS", "RPL")
+LR_full <- dplyr::filter(LR_full, !substr(LR, 1, 3) %in% exclude_list)
+
+#write out as csv and add to the matrix list
+write.csv(LR_full, file=paste0(dir, "/LR_clusterpair_matrix.csv"), row.names = FALSE)
+LR.matrix.list[[patient]] <- LR_full
+
+}
+
+```
+
+### Read the individual tables back in into list form
+
+```{r}
+list.dirs(paste0(dir.orig, "all_celltypes/"))
+sample.dirs <- list.dirs(paste0(dir.orig, "all_celltypes/"))[-c(1:57, 86:93)]
+odd_indexes<-seq(1,27,2)
+sample.dirs <- sample.dirs[odd_indexes]
+LRscore.dirs <- paste0(sample.dirs, "/LR_clusterpair_matrix.csv")
+LRscore.list <- lapply(LRscore.dirs, function(x) read.csv(x, header=T))
+
+samples <- sub("(.*?)TBB" , "TBB", sample.dirs)
+TIG <- c("TIG2", "TIG3", "TIG3","TIG3", "TIG2", "TIG2","TIG2","TIG2","TIG2","TIG3","TIG3","TIG3","TIG3","TIG2")
+names(LRscore.list) <- samples
+
+cell.pair.list <- colnames(LRscore.list[[1]])[-1]
+```
+
+### Prepare separate data frames for each specific cell interaction
+Subset interactions that are significantly higher in TIG2 or TIG3 (p<= 0.05) and have a mean LRscore of at least 0.4 in that TIG.
+
+```{r}
+dir <- paste0(dir.orig, "all_celltypes/")
+
+#initialize data frames
+TIG2.high <- data.frame(ligand = character(),
+                        receptor = character(),
+                        p = double(),
+                        mean_meax = double(),
+                        higher = character())
+TIG3.high <- TIG2.high
+
+for (i in cell.pair.list) {
+  
+  #set directory
+  dirx <- paste0(dir, i, "/")
+  dir.create(dirx)
+  
+  ## select only cell-cell column and LR names
+  TM.table <- lapply(LRscore.list, function(x) x[, c("LR", i )])
+  ## attach sample names and TIG to cell-cell column
+  for (x in 1:14) {
+    colnames(TM.table[[x]])[[2]] <- paste0("myeloid.TNK_", samples[x], "_", TIG[x])
+  }
+
+  ## merge by LR names (includes also LRs that do not appear in all samples) and check for     duplicates
+  TM.table <- Reduce(function(x, y) merge(x,y, by= "LR", all.x=TRUE, all.y=TRUE), TM.table)
+  #dups <- TM.table[duplicated(TM.table$LR),]
+  #View(dups)
+  #TM.table <- TM.table[!duplicated(TM.table$interacting_pair),]
+  TM.table[is.na(TM.table)] <- 0
+  #write out table
+  write.csv(TM.table, file=paste0(dirx, i, "_full_matrix.csv"))
+
+  #format the table
+  TM.dat <- gather(TM.table, key="ID", value = "LR_score", 2:15)
+  TM.dat <- separate(TM.dat, col = "ID", into=c("cell.pair", "sample", "TIG"), sep="_", remove=TRUE)
+
+  
+  ## Find interactions that are overrepresented in one of the TIGs
+
+  #Calculate Wilcoxon test for each LR pair
+  pvalues <- TM.dat %>% 
+  group_by(LR) %>% 
+  summarise(p=wilcox.test(LR_score~TIG)$p.value)
+
+  #Calculate means for TIG2 and TIG3
+  mean <- TM.dat %>%
+    group_by(LR, TIG) %>%
+    summarise(mean=mean(LR_score))
+  max_mean <- mean %>%
+    group_by(LR) %>%
+    summarise(mean_max=max(mean))
+  
+  diff_mean <- mean %>%
+    group_by(LR) %>%
+    summarise(diff=diff(mean))
+  diff_mean$higher <- ifelse(diff_mean$diff > 0, "TIG3", "TIG2")
+  TIG_higher <- diff_mean[,-2]
+
+  #Merge p-values and max_mean with LR table
+  p_mean <- merge(pvalues, max_mean, by = "LR")
+  tdat <- merge(TM.dat, p_mean, by.x = "LR", by.y ="LR", all.x = TRUE)
+  tdat$p.wt <- paste0('p=',round(tdat$p, digits=4))
+
+  #Exclude genes that have the max(mean) < 0.5. & sort remaining genes by lowest pvalue
+  p_mean_sub <- subset(p_mean, p_mean$mean_max >= 0.4)
+  setorder(p_mean_sub, p, na.last=TRUE)
+  TM.top <- top_n(p_mean_sub, -500, p)
+  write.csv(TM.top, file=paste0(dirx, i, "_top500LR.csv"))
+
+  TM.sign.05 <- subset(tdat, tdat$p<=0.05 & tdat$mean_max>=0.4)
+  TM.sign.01 <- subset(tdat, tdat$p<=0.01 & tdat$mean_max>=0.4)
+  
+  # GOI <- c("CD274_PDCD1", "CD80_CTLA4", "LGALS9_HAVCR2", "CD47_SIRPG", "IL15_IL2RB", "CXCL9_CXCR3", "CCL20_CXCR3", "CCL4_CCR1")
+  #GOI2 <- c("CCL18_CCR8")
+  GOI_TM <- c("LGALS9_HAVCR2", "CSF1_CSF1R", "FLT3LG_FLT3", "CCL3_CCR1")
+  GOI_MT <- c("CD274_PDCD1", "CD80_CTLA4", "CXCL9_CXCR3", "IL15_IL2RB")
+  GOI_EpT <- c("CXCL9_CXCR3", "LGALS9_HAVCR2", "CD274_PDCD1", "CCL3_CCR1")
+  TM.select <- subset(tdat, LR %in% GOI_EpT)
+
+  #plot LR pairs that are significantly different
+  if (nrow(TM.sign.05) > 0) {
+  p05 = ggplot(TM.sign.05, aes(x= TIG, y = LR_score, fill=TIG))+
+    geom_boxplot()+
+    geom_point()+
+    facet_wrap(~LR+p.wt, scales="free", ncol=8, strip.position="bottom")+
+    theme(axis.text.x=element_blank(), axis.ticks.x = element_blank())+
+    theme(panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+  ggsave(paste0(dirx, i, "_p005.png"), width = 16, height=20)
+  }
+
+  if (nrow(TM.sign.01) > 0) {
+  p01 = ggplot(TM.sign.01, aes(x= TIG, y = LR_score, fill=TIG))+
+    geom_boxplot()+
+    geom_point()+
+    facet_wrap(~LR+p.wt, scales="free", ncol=5, strip.position="bottom")+
+    theme(axis.text.x=element_blank(), axis.ticks.x = element_blank())+
+    theme(panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))
+  
+  ggsave(paste0(dirx, i, "_p001.png"), width = 10, height = 12)
+  }
+  
+  ### merge p values and means to get complete TIG2vsTIG3 table
+  mean <- spread(mean, key = "TIG", value = "mean")
+  comp <- merge(mean, pvalues, by="LR")
+  comp$delta <- comp$TIG2 - comp$TIG3
+  comp$cellpair <- i
+  write.csv(comp, file=paste0(dirx, i, "TIG2vsTIG3.csv"))
+}
+```
+
+## Merge & plot LR pairs of interest for Ep-T-M interactions
+
+```{r}
+dir <- paste0(dir.orig, "all_celltypes/")
+cell.pair.list <- cell.pair.list[c(25, 22, 32, 29, 3, 4)]
+dir.list <- paste0(dir, cell.pair.list, "/", cell.pair.list, "TIG2vsTIG3.csv")
+
+#initialize data frame and read in tables
+comp.all <- data.frame(X=character(),
+                        LR = character(),
+                        TIG2 = double(),
+                        TIG3 = double(),
+                        p = double(),
+                        delta = double(),
+                        cellpair = character())
+
+for (i in dir.list) {
+  df <- read.csv(i)
+  comp.all <- rbind(comp.all, df)
+}
+
+comp.all[,1] <- NULL
+comp.all$maxmean <- pmax(comp.all$TIG2, comp.all$TIG3)
+comp.all$TIG <- ifelse(comp.all$delta > 0, "TIG2", "TIG3")
+
+#all LR pair/cluster pair combinations where the max mean is < 0.4 --> assign delta = 0 and p = n.s.
+comp.all$delta <- ifelse(comp.all$maxmean <= 0.4, NA, comp.all$delta)
+comp.all$p<- ifelse(comp.all$maxmean <= 0.4,  NA , comp.all$p)
+comp.all$TIG<- ifelse(comp.all$maxmean <= 0.4,  NA , comp.all$TIG)
+
+#all LR pair/cluster pair combinations where p is above 0.05 --> assign delta = 0 and p = n.s.
+comp.all$delta <- ifelse(comp.all$p > 0.05,  NA, comp.all$delta)
+comp.all$p<- ifelse(comp.all$p > 0.05,  NA , comp.all$p)
+comp.all$TIG<- ifelse(comp.all$p > 0.05,  NA , comp.all$TIG)
+
+#Change cell pair names
+levels(comp.all$cellpair) <- c("T/NK -> M", "T/NK -> tumor", "M -> T/NK", "M -> tumor", "tumor -> T/NK", "tumor -> M")
+
+#Reorder LR pairs
+comp.all$LR <- factor(comp.all$LR, levels = rev(levels(comp.all$LR)))
+
+GOI <- c("CD274_PDCD1", "CD80_CTLA4","CD86_CTLA4", "LGALS9_HAVCR2", "PVR_TIGIT", "FASLG_FAS", 
+        "CCL3_CCR5", "CCL3_CCR1", "CCL5_CCR5", "CCL5_CCR1", "CCL4_CCR1", "CCL4_CCR5", "CXCL9_CXCR3",  
+         "VEGFA_NRP1", "CSF1_CSF1R",  "IL15_IL2RB", "IL1RN_IL1R2", "IL10_IL10RA", "FLT3LG_FLT3",
+         "EREG_ERBB4", "HBEGF_ERBB4", "THBS1_ITGB1", "THBS1_ITGA4", "TNFSF10_TNFRSF10B")
+comp.small <- comp.all[comp.all$LR %in% GOI,]
+#comp.small$LR <- factor(comp.small$LR, levels = rev(GOI))
+comp.small$LR <- factor(comp.small$LR, levels = GOI)
+comp.small$padj <- ifelse(comp.small$p < 0.001, 9, ifelse(comp.small$p < 0.01, 5, ifelse(comp.small$p < 0.05, 2, 0)))
+
+
+p <- ggplot(comp.small)+
+  geom_tile(aes(cellpair, LR, fill = TIG))+
+  scale_fill_manual(name= "Upregulated in", values = c("#F8766D", "#00BFC4", "grey50"))+
+  #scale_alpha(name = "\u0394 LR-score", range = c(0.4, 1))+
+  geom_point(aes(cellpair, LR, size = padj), color = "black", shape = 16)+
+  scale_size_area("p-values",breaks=c(2, 5, 9),labels=c("<0.05", "<0.01", "<0.001"), limits = c(0,9), max_size = 9)+
+  theme(axis.text.x = element_text(angle=90, hjust = 0, vjust = 1, size=12), 
+        axis.text.y = element_text(size=12),
+        axis.title.x =element_text(size=15),
+        axis.title.y =element_text(size=15),
+        panel.background= element_blank(), panel.border = element_rect(color="black", fill=NA, size=2))+
+  labs(x="Cell type pair", y="Interacting partners")+
+  scale_x_discrete(position = "top")+
+  coord_flip()
+ 
+
+
+```

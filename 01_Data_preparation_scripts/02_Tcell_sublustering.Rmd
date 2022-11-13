@@ -1,0 +1,730 @@
+---
+title: "10x_complete_Tcell"
+author: "Sandra Tietscher"
+date: "10/30/2019"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+if (!require(ggplot2)) install.packages('ggplot2')
+library(ggplot2)
+
+if (!require(dplyr)) install.packages('dplyr')
+library(dplyr)
+
+if (!require(Seurat)) install.packages('Seurat')
+library(Seurat)
+
+if (!require(tidyverse)) install.packages('tidyverse')
+library(tidyverse)
+
+if (!require(data.table)) install.packages('data.table')
+library(data.table)
+
+if (!require(sctransform)) install.packages('sctransform')
+library(sctransform)
+
+if(!require(clustree)) install.packages("clustree")
+library(clustree)
+
+library(magrittr)
+library(RColorBrewer)
+#library(plyr) -> wilcoxon testing line does not work when this is loaded after dplyr
+library(corrplot)
+library(pheatmap)
+library(ComplexHeatmap)
+library(scales)
+library(viridis)
+library(circlize)
+library(ggrepel)
+
+in.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/subset_objects/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/TNK_cells/regressed_mito-krt-MGP/"
+
+heatmap.color <- brewer.pal(n=10, name= "RdBu")
+heatmap.color.rev <- rev(heatmap.color)
+
+run1.Tcell <- readRDS(file=paste0(out.path, 'TNKcell_15dimres1_excl_cl12and20.rds'))
+run1.Tcell$SCT_snn_res.1 <- droplevels(run1.Tcell$SCT_snn_res.1)
+
+```
+
+## Load object
+
+```{r}
+run1.Tcell <- readRDS(file = paste(in.path, "T_NK_cells.rds", sep = ''))
+
+# store Keratin and MGP percentage in object meta data
+run1.Tcell <- PercentageFeatureSet(run1.Tcell, pattern = "^KRT", col.name = "percent.krt")
+run1.Tcell <- PercentageFeatureSet(run1.Tcell, pattern = "MGP", col.name = "percent.MGP")
+#run1.Tcell <- PercentageFeatureSet(run1.Tcell, pattern = "^HSP", col.name = "percent.HSP")
+
+table(run1.Tcell@meta.data$orig.ident)
+table(run1.Tcell$TIG)
+```
+
+## Apply sctransform normalization
+
+This replaces FindVariableFeatures, Normalize and ScaleData. 
+```{r}
+
+# run sctransform
+#run1.Tcell <- SCTransform(run1.Tcell , vars.to.regress = c("percent.mt"), verbose = TRUE)
+run1.Tcell <- SCTransform(run1.Tcell , vars.to.regress = c("percent.mt", "percent.krt", "percent.MGP"), verbose = TRUE)
+#run1.Tcell <- SCTransform(run1.Tcell , vars.to.regress = c("percent.mt", "percent.krt", "percent.MGP", "percent.HSP"), verbose = TRUE)
+```
+
+## Run Dimensional Reduction Analysis
+```{r}
+
+#### Run PCA ###
+run1.Tcell <- RunPCA(object = run1.Tcell, verbose = FALSE)
+
+print(x = run1.Tcell[['pca']], dims = 1:5, nfeatures = 5, projected = FALSE)
+PCA_genes <- VizDimLoadings(object = run1.Tcell, dims = 1:2)
+PCAPlot(object = run1.Tcell)
+
+#Choose significant dimensions
+DimHeatmap(object = run1.Tcell, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(object = run1.Tcell, dims = 15:20, cells = 500, balanced = TRUE)
+ElbowPlot(object = run1.Tcell, ndims =25)
+
+### run UMAP ###
+
+run1.Tcell <- RunUMAP(object = run1.Tcell, dims = 1:15)
+
+# note that you can set `label = TRUE` or use the LabelClusters function to help label individual clusters
+DimPlot(object = run1.Tcell, reduction = 'umap', label = TRUE)
+DimPlot(object = run1.Tcell, reduction = 'umap', group.by = "orig.ident")
+DimPlot(object = run1.Tcell, reduction = 'umap', group.by = "run")
+DimPlot(object = run1.Tcell, reduction = 'umap', group.by = "TIG")
+#DimPlot(object = run1.Tcell, reduction = 'umap', group.by = "phase")
+
+```
+
+## Graph-based clustering
+
+```{r}
+run1.Tcell <- FindNeighbors(object = run1.Tcell, dims = 1:15)
+run1.Tcell <- FindClusters(object = run1.Tcell, resolution = 1)
+
+#Query number of clusters and cells per cluster
+cells.per.cluster <- table(... = run1.Tcell@meta.data$SCT_snn_res.1)
+cells.per.cluster
+write.csv(cells.per.cluster, file = paste0(out.path, "15dim_res1CellsPerCluster.csv"), row.names = FALSE)
+
+#Save object
+run1.Tcell <- saveRDS(run1.Tcell, file = paste(out.path, "run1_Tcell_15dim.rds", sep = ''))
+
+# QC plots
+VlnPlot(object = run1.Tcell, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, sort = FALSE)
+VlnPlot(object = run1.Tcell, features = c("MKI67"), pt.size = 0, sort = FALSE)
+VlnPlot(object = run1.Tcell, features = c("percent.krt", "percent.MGP"), pt.size = 0, sort = FALSE)
+FeaturePlot(run1.Tcell, features = c("PDCD1", "CD4", "CD8A", "FOXP3"))
+
+#Highlight individual clusters
+Idents(run1.Tcell) <- run1.Tcell$metacluster
+cells.CD4ex = WhichCells(object = run1.Tcell, ident = c("CD4_exhausted", "CD8_exhausted"))
+DimPlot(object = run1.Tcell, reduction = 'umap', cells.highlight = cells.CD4ex)
+
+```
+## Clustree analysis
+
+```{r}
+p = clustree(run1.Tcell, prefix = "SCT_snn_res.")+
+  scale_edge_color_continuous(low = "black", high = "black")
+```
+
+## Cluster proportions per sample & per TIG
+
+```{r} 
+
+#Which clusters is each sample made of?
+cluster.sample.prop <- prop.table(x=table(run1.Tcell$SCT_snn_res.1, run1.Tcell$orig.ident), margin=2)
+write.csv(cluster.sample.prop, file = paste0(out.path, "cluster_samples_proportions.csv"), row.names = TRUE)
+cluster.sample.prop <- as.data.frame(cluster.sample.prop)
+colnames(cluster.sample.prop) <- c('cluster', 'sample', 'prop')
+
+p = ggplot(cluster.sample.prop, aes(sample, y = prop, fill=cluster)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('Sample composition (T/NK clusters)')
+ggsave(file=file.path(out.path,paste0('sample_composition.png')),width=10, height=6,dpi=300)
+
+
+### per sample ###
+
+cluster.sample = table(run1.Tcell$SCT_snn_res.1, run1.Tcell$orig.ident)
+write.csv(cluster.sample, file = paste0(out.path, "cluster_samples.csv"), row.names = TRUE)
+
+sample.cluster.prop <- prop.table(cluster.sample, margin = 1)
+write.csv(sample.cluster.prop, file = paste0(out.path, "sample_cluster_proportions.csv"), row.names = TRUE)
+
+#prepare data table for stacked barplot
+sample.cluster.prop <- as.data.frame(sample.cluster.prop)
+colnames(sample.cluster.prop) <- c('cluster', 'sample', 'prop')
+
+# Which samples is each cluster made of?
+p = ggplot(sample.cluster.prop, aes(cluster, y = prop, fill=sample)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('T/NK cell cluster composition')
+ggsave(file=file.path(out.path,paste0('cluster_composition_sample.png')),width=8, height=4,dpi=300)
+
+# How many cells of each sample are in each cluster?
+cluster.sample <- as.data.frame(cluster.sample)
+colnames(cluster.sample) <- c("cluster", "sample", "cell.nr")
+p = ggplot(cluster.sample, aes(cluster, y = cell.nr, fill=sample)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('T/NK cell cluster composition')
+ggsave(file=file.path(out.path,paste0('cluster_totalcells_sample.png')),width=8, height=4,dpi=300)
+
+
+#What percentage of each sample is in each cluster?
+cluster.sample.prop <- as.data.frame(cluster.sample.prop)
+cluster.sample.prop$TIG <- ifelse(cluster.sample.prop$sample == "TBB129" | cluster.sample.prop$sample  == "TBB171" | cluster.sample.prop$sample  == "TBB111" | cluster.sample.prop$sample  == "TBB165" | cluster.sample.prop$sample  == "TBB338" | cluster.sample.prop$sample  == "TBB184" | cluster.sample.prop$sample  == "TBB011", "TIG2", "TIG3")
+colnames(cluster.sample.prop) <- c("cluster", "sample", "proportion", "TIG")
+
+# p = ggplot(cluster.sample.prop, aes(cluster, y = proportion, color=TIG)) +
+#   geom_point(aes(color=TIG))+
+#   theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+#   #coord_flip()+
+#   theme(panel.background = element_blank())+
+#   ggtitle('Percentage of sample x that falls in cluster y')
+# ggsave(file=file.path(out.path,paste0('sample_prop_per_cluster.png')),width=8, height=4,dpi=300)
+
+
+
+### per TIG ###
+
+cluster.TIG = table(run1.Tcell$SCT_snn_res.1, run1.Tcell$TIG)
+write.csv(cluster.TIG, file = paste0(out.path, "cluster_TIG.csv"), row.names = TRUE)
+cluster.TIG.prop <- prop.table(x=table(run1.Tcell$SCT_snn_res.1, run1.Tcell$TIG), margin=2)
+write.csv(cluster.TIG.prop, file = paste0(out.path, "cluster_TIG_proportion.csv"), row.names = TRUE)
+
+TIG.cluster.prop <- prop.table(cluster.TIG, margin = 1)
+write.csv(TIG.cluster.prop, file = paste0(out.path, "TIG_cluster_proportions.csv"), row.names = TRUE)
+
+#What percentage of each TIG is in which cluster? (Grouped barplot)
+cluster.TIG.prop<- as.data.frame(cluster.TIG.prop)
+colnames(cluster.TIG.prop) <- c('cluster', 'TIG', 'prop')
+p = ggplot(cluster.TIG.prop, aes(cluster, y = prop, fill=TIG)) +
+  geom_bar(stat="identity", position = "dodge")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('Proportion of each TIG belonging to a specific cluster')
+ggsave(file=file.path(out.path,paste0('TIG_cluster_prop.png')),width=8, height=4,dpi=300)
+
+
+### Calculate Wilcoxon Test
+tdat <- as.data.table(cluster.sample.prop)
+tdat$cluster <- as.factor(tdat$cluster)
+tdat$TIG <- as.factor(tdat$TIG)
+tdat$sample <- as.factor(tdat$sample)
+pvalues <- tdat %>% 
+  group_by(cluster) %>% 
+  summarise(p=wilcox.test(proportion~TIG)$p.value)
+tdat <- merge(tdat, pvalues, by.x = "cluster", by.y ="cluster", all.x = TRUE)
+tdat$p.wt <- paste0('p=',round(tdat$p, digits=3))
+
+#Boxplots
+p = ggplot(tdat, aes(x= TIG, y = proportion, fill=TIG))+
+  geom_boxplot()+
+  geom_point()+
+  facet_wrap(~cluster+p.wt, scales="free", ncol=10, strip.position="bottom")+
+  theme(axis.title.x=element_text("cluster"), axis.text.x=element_blank(), axis.ticks.x = element_blank())+
+  #theme(panel.background = element_blank())+
+  xlab("cluster")
+ggsave(file=file.path(out.path,paste0('cluster_per_TIG.png')),width=12, height=5,dpi=300)
+
+
+
+#How many cells of each TIG are in each cluster?
+cluster.TIG <- as.data.frame(cluster.TIG)
+colnames(cluster.TIG) <- c("cluster", "TIG", "cell.nr")
+
+p = ggplot(cluster.TIG, aes(cluster, y = cell.nr, fill=TIG)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('T/NK cell cluster composition')
+
+ggsave(file=file.path(out.path,paste0('cluster_TIG.png')),width=8, height=4,dpi=300)
+
+
+```
+
+### Remove low-quality clusters
+Remove high-keratin cluster 20 and low read-count cluster 12.
+
+```{r}
+Idents(run1.Tcell) <- run1.Tcell$SCT_snn_res.1
+
+#check cluster 12
+cl12 <- read.csv(file=paste0(out.path, "cluster12_vs_myeloid.csv"))
+cl12 <- as.data.frame(t(cl12))
+cl12[,1] <- as.numeric(as.character(cl12[,1]))
+cl12[,2] <- as.numeric(as.character(cl12[,2]))
+colnames(cl12) <-c("cluster_12_prop", "myeloid_prop")
+cl12 <- cl12[-1,]
+cl12$sample <- rownames(cl12)
+cl12$TIG <- c()
+
+pearson_sc <- cor.test(cl12$cluster_12_prop, cl12$myeloid_prop, method = c("pearson")) #cor=0.519015, p-value = 0.0572
+spearman_sc <- cor.test(cl12$cluster_12_prop, cl12$myeloid_prop, method = c("spearman"))
+#cor=0.7070502,  p-value = 0.004686
+
+p = ggplot(cl12, aes(x=cluster_12_prop, y=myeloid_prop))+
+  geom_point()+
+  geom_text_repel(label=cl12$sample)+
+  geom_smooth(method = lm, se =TRUE)+
+  ggtitle("Spearman correlation = 0.71\np=0.047")
+
+#Remove cluster 12 (not cells) and cluster 20 (high keratin contamination)
+run1.Tcell <- subset(x=run1.Tcell, idents = c(0:11, 13:19))
+#saveRDS(run1.Tcell, file=paste0(out.path, 'TNKcell_15dimres1_excl_cl12and20.rds'))
+
+
+```
+
+## Finding differentially expressed features
+
+
+```{r}
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones. Save list as csv.
+Idents(run1.Tcell) <- run1.Tcell$SCT_snn_res.1
+run1.Tcell.markers.clean <- FindAllMarkers(object = run1.Tcell, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(run1.Tcell.markers.clean, file = paste0(out.path, "dim15_res1_cluster_AllMarkerGenes_HSPregressed.csv"), row.names = FALSE)
+marker.genes <- run1.Tcell.markers.clean %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+write.csv(marker.genes, file = paste0(out.path, "dim15_res1_cluster_MarkerGenesTop10_clean.csv"), row.names = TRUE)
+
+# using MAST
+Idents(run1.Tcell) <- run1.Tcell$SCT_snn_res.1
+Tcell.markers.clean.MAST <- FindAllMarkers(object = run1.Tcell, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use="MAST")
+write.csv(Tcell.markers.clean.MAST, file = paste0(out.path, "DE_cluster_AllMarkerGenes_clean_MAST.csv"), row.names = FALSE)
+marker.genes <- Tcell.markers.clean.MAST %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+write.csv(marker.genes, file = paste0(out.path, "DE_cluster_MarkerGenesTop10_clean_MAST.csv"), row.names = TRUE)
+
+
+#specific cluster markers
+#Idents(run1.Tcell) <- run1.Tcell$seurat_clusters
+#naive.markers.MAST <- FindMarkers(object = run1.Tcell, ident.1=9, min.pct = 0.25, logfc.threshold = 0.25, test.use="MAST")
+#write.csv(naive.markers.MAST, file = paste0(in.path, "DE_cluster9_MAST.csv"), row.names = TRUE)
+```
+
+
+## Feature lists ##
+```{r}
+features = c("FOXP3", "CCL18",  "IL2RA")
+features_cytof = c('CD3E', 'CD8A', 'CD4', 'FOXP3', 'HAVCR2', 'PDCD1', 'CTLA4', 'ICOS', 'IL2RA', 'PTPRC', 'CD68', 'CD14', 'CD274', 'CCR7', 'HLA-DRA', 'MRC1', 'SIGLEC1', 'MSR1', 'CD163', 'FCGR2A', 'FCGR2B', 'FCGR2C','FCGR1A', 'ITGAM', 'ITGAX', 'FCGR3A', 'CD93', 'IL3RA', 'CD86', 'CD36', 'CD38', 'CCR2', 'SLAMF7')
+features_cytof_T_01 = c('CD3E', 'CD8A', 'FOXP3', 'HAVCR2', 'PDCD1', 'CTLA4')
+features_cytof_T_02 = c('ICOS', 'IL2RA', 'PTPRC', 'CD4', 'CCR7', 'CD38')
+features_cytof_T = c('CD3E', 'CD8A', 'FOXP3', 'HAVCR2', 'PDCD1', 'CTLA4','ICOS', 'IL2RA', 'PTPRC', 'CD4', 'CCR7', 'CD38', 'NCAM1')
+features_T_extended= c('CD3E', 'CD8A', 'FOXP3', 'HAVCR2', 'PDCD1', 'CTLA4','ICOS', 'IL2RA', 'PTPRC', 'CD4', 'CCR7', 'CD38', 'NCAM1', 'ENTPD1', 'ITGAE', 'SELL', 'CD40LG', "FCGR3A", "CD27", "IL7R", "HLA-DRA", "TBX21", "CD69", "NCR1", "IRF4")
+cytokine= c('CCL20', 'CCL22', 'CXCL2', 'CXCL3', 'CXCL8', 'CCL8', 'CCL18', 'CCL2', 'CCL3', 'CCL4', 'CCL4L2', 'CCL5', 'CXCL10', 'CXCL12', 'CCL13', 'CXCL1', 'CXCL13', "IL4", "IL13", "IFNG", "TNF")
+chemokine_01 = c('CCL20', 'CCL22', 'CXCL2', 'CXCL3', 'CXCL8')
+chemokine_02 = c('CCL8', 'CCL18', 'CCL2', 'CCL3', 'CCL4')
+chemokine_03 = c( 'CCL4L2', 'CXCL10', 'CXCL12', 'CCL13', 'CXCL1')
+cytokine_receptor = c('CCR1','CCR10','CCR2','CCR7', 'CCR4', 'CCR5', 'CCR6', 'IL10RA', 'IL4R', 'CXCR2', 'CXCR3', 'CXCR4', 'CXCR5', 'CCR8')
+TF = c('IRF2', 'IRF5', 'IRF8', 'IRF9', 'IRF4', 'IRF7','STAT1', 'STAT2', 'STAT4', 'TCF12', 'TCF19', 'BCL6',
+       'ZBTB31', 'ZBTB33', 'ZBTB47', 'CIITA')
+
+features_plitas = c('CCR8', 'CCR10', 'CX3CR1', 'IL1RL1', 'IL2RA', 'IL1R2',  'TNFRSF8', 'TNFRSF4', 'TNFRSF9', 'TNFRSF18', 'CD177', 'CARD16')
+
+Th1 = c('CCL4', 'CD38', 'CXCL9', 'CXCL10', 'CXCL11', 'FN1', 'GNLY', 'GZMA', 'GZMB', 'IFNA', 'IFNG', 'IL2', 'IL8', 'IL10', 'IL12B', 'IL18', 'LTA', 'MAP3K8', 'OSM', 'STAT1', 'STAT4', 'TBX21', 'TIA1', 'TNF')
+
+Th2 =  c('GATA3', 'IL4', 'IL5', 'IL10', 'IL13', 'MAF', 'STAT5A', 'STAT5B', 'STAT6')
+
+Th17 = c('BATF', 'CCL20', 'IL1A', 'IL1B', 'IL6', 'IL17A', 'IL17F', 'IL18', 'IL21', 'IL22', 'LTA', 'RORC', 'STAT3', 'TGFB1', 'TGFB2', 'TGFB3')
+
+tumor_reactive = c("PDCD1", "LAG3", "HAVCR2", "TNFRSF9", "TNFRSF18", "ENTPD1", "ITGAE", "CXCL13", "IRF4", "BATF")
+
+cytotoxic <- c("GZMB", "GZMA", "GZMK", "TNF", "IFNG", "GNLY", "FASLG", "IL2")
+
+M1M2_rec <- c("IL10RA", "IL10RB", "CXCR3", "CCR4", "CCR1", "CCR5", "IGF2R", "TFGBR2", "TGFBR1", "TGFBR3", "ITGAV", "ITGA5", "LRP8", "LRP1", "SCARB1", "C3AR1")
+M1M2_lig <- c("CALM1", "CALM2", "CALM3", "TGFB1", "TLN1", "HSP90AA1", "VEGFA", "GNAI2", "PGF", "MDK", "FGF2")
+```
+
+## Cluster averages ##
+
+```{r}
+
+Idents(run1.Tcell) <- run1.Tcell$SCT_snn_res.1
+cluster.averages <- AverageExpression(object = run1.Tcell, return.seurat = TRUE)
+cluster.averages
+
+#Calculate averages for metaclusters
+Idents(run1.Tcell) <- run1.Tcell$metacluster
+metacluster.averages <- AverageExpression(object = run1.Tcell, return.seurat = TRUE)
+metacluster.averages
+
+# Add celltype information
+#cluster.averages[['cluster']] <- Idents(object=cluster.averages)
+#cluster.averages <- RenameIdents(object = cluster.averages, new.cluster.ids)
+#Save celltype information in metadata
+#cluster.averages [["cell.type"]] <- Idents(object = cluster.averages )
+#Reset active IDs to original clusters
+#Idents(cluster.averages) <- cluster.averages[["cluster"]]
+
+
+## Calculate expression averages separately for each sample
+# Careful #: sample order gets mixed up, ordered by cluster size (not always the same order for each sample)
+cluster.average.clean.TIG <- AverageExpression(object=run1.Tcell, return.seurat=TRUE, add.ident = "TIG")
+cluster.average.clean.TIG$TIG
+
+### Heatmap of chosen features (cluster averages)
+#total
+p = DoHeatmap(object = metacluster.averages, features = TCR, size = 5, draw.lines = FALSE, angle=70)+
+  scale_fill_gradientn(colors = heatmap.color.rev)
+  #coord_flip()
+
+#single cell heatmap
+p = DoHeatmap(subset(CD8, downsample=100), features = cytotoxic, size = 3, draw.lines = FALSE)
+
+#by TIG
+p = DoHeatmap(object = cluster.average.clean.TIG, features = features_T_extended, size = 3, draw.lines = FALSE, angle=0)+
+  scale_fill_gradientn(colors = heatmap.color.rev)
+
+```
+
+## Big DE heatmap
+
+```{r}
+#marker.genes <- read.csv(file = paste0(out.path, "DE_cluster_MarkerGenesTop10_clean_MAST.csv"))
+
+all.marker.genes <- read.csv(file = paste0(out.path, "DE_cluster_AllMarkerGenes_clean_MAST.csv"))
+marker.genes <- all.marker.genes %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+
+features <- marker.genes$gene
+features.cluster <- marker.genes[,7:8]
+colnames(features.cluster) <- c('cluster_expressed', 'gene')
+# remove duplicate genes
+features.cluster <- features.cluster[!duplicated(features.cluster$gene), ]
+
+
+p = DoHeatmap(object = cluster.averages, features = "IL2", size = 0, draw.lines = FALSE, angle=45)+
+  scale_fill_gradientn(colors = heatmap.color.rev)
+
+average_matrix <- GetAssayData(cluster.averages[["SCT"]], slot="scale.data")
+average_df<- as.data.frame(average_matrix)
+average_df <- rownames_to_column(average_df, var = "gene")
+average_df <- gather(average_df, key = "cluster", value = "scaled_average", 2:21)
+levels(average_df$cluster) <- factor(0:19)
+
+#use only top10 DE features of each cluster
+average_df <- average_df[average_df$gene %in% features,]
+big.DE <- merge(average_df, features.cluster, by = 'gene')
+
+#Prepare order of variables
+big.DE$cluster <- as.numeric(big.DE$cluster)
+big.DE$cluster <- as.factor(big.DE$cluster)
+big.DE$cluster <- factor(big.DE$cluster, levels=c(19:0))
+big.DE$gene <- as.factor(big.DE$gene)
+big.DE$gene <- factor(big.DE$gene, levels = unique(big.DE$gene[order(big.DE$cluster_expressed)]))
+
+
+#ggplot heatmap
+p = ggplot(big.DE, aes(x=gene, y=cluster))+
+  geom_tile(aes(fill=scaled_average))+
+  theme(axis.title.y = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1, size=10), axis.text.y = element_text(size=12))+
+  scale_fill_gradientn(colors = magma(100))
+ggsave(paste0(out.path, "Heatmap_Top10genes_cluster.png"), width=15, height=10, dpi=300)
+```
+
+### Complex heatmaps ####
+
+```{r}
+
+cluster.sample = table(run1.Tcell$SCT_snn_res.1, run1.Tcell$orig.ident)
+#my_colors <- hue_pal()(8)
+heatmap_color <- colorRamp2(seq(4, -2, length = 100), rev(magma(100)))
+
+#Return as tables
+Idents(run1.Tcell) <- run1.Tcell$metacluster
+cluster.averages.table <- AverageExpression(object = CD8, return.seurat = FALSE)
+RNA.average <- as.matrix(cluster.averages.table[[1]])
+SCT.average <- as.matrix(cluster.averages.table[[2]])
+#Normalize between 0 and 1
+RNA.average.norm <- apply(RNA.average, 1, function(x)(x-min(x))/(max(x)-min(x)))
+RNA.average.znorm <- apply(RNA.average, 1, function(x)(x - mean(x)) / sd(x))
+
+
+#Reorder
+RNA.average.norm <- RNA.average.norm[c(6,3,1, 5,4,2),]
+RNA.average.znorm <- RNA.average.znorm[c(6,3,1, 5,4,2),]
+
+#just the heatmap
+p = Heatmap(subset(RNA.average.znorm, select=cytotoxic), show_row_names = TRUE, row_dend_side = "left", heatmap_legend_param = list(title = "Z-scored\nmean counts"), col=viridis(100), cluster_rows = FALSE, row_names_side = "left", column_names_side = "top", column_names_rot = 70, column_dend_side = "bottom")
+
+
+## construct row annotation for metaclusters
+cluster.ids <- read.csv(file = paste0(out.path, "Tcell_metacluster_assignment.csv"))
+cluster.ids <- cluster.ids[c(13, 6, 8, 9, 15, 19, 3, 11, 12, 17, 7, 5),] # if only CD8 cells are included
+cluster.ids$metacluster <- droplevels(cluster.ids$metacluster)
+metacl_colors <- hue_pal()(6)
+names(metacl_colors) <- levels(cluster.ids$metacluster)
+metacl_ha <- rowAnnotation(metacluster = cluster.ids$metacluster, col = list(metacluster= metacl_colors))
+lgd2 <- Legend(at = levels(cluster.ids$metacluster), title = NULL, type = "point", legend_gp = gpar(col=metacl_colors))
+
+p = Heatmap(subset(RNA.average.znorm, select=tumor_reactive), show_row_names = TRUE, row_names_side = "right", cluster_rows = FALSE, heatmap_legend_param = list(title = "Z-scored intensity", direction = "horizontal"), left_annotation = metacl_ha, col=viridis(100))
+#p2 = draw(p, annotation_legend_list = list(lgd2), annotation_legend_side = "right", heatmap_legend_side = "bottom")
+
+#Reorder clusters
+#RNA.average.norm <- RNA.average.norm[c(5,2:4, 6,7,1),] ##CD8 only
+#RNA.average.znorm <- RNA.average.znorm[c(5,2:4, 6,7,1),]
+RNA.average.norm <- RNA.average.norm[c(9, 3,5,6,10,12,1,7, 8, 11, 4, 2),] ##CD8 + NK
+RNA.average.znorm <- RNA.average.znorm[c(9, 3,5,6,10,12,1,7, 8, 11, 4, 2),] ##CD8 + NK
+p = Heatmap(subset(RNA.average.znorm, select=cytotoxic), show_row_names = TRUE, row_names_side = "left", column_names_side = "top", column_names_rot = 70, cluster_rows = FALSE, cluster_columns = FALSE, heatmap_legend_param = list(title = "Z-scored mean counts", direction = "horizontal"), left_annotation = metacl_ha, col=viridis(100))
+```
+
+## Assigning subtype and metacluster to clusters
+
+```{r}
+
+#Read in table with cluster ids
+cluster.ids <- read.csv(file = paste0(out.path, "Tcell_metacluster_assignment.csv"))
+Idents(run1.Tcell) <- run1.Tcell$SCT_snn_res.1
+
+#Metacluster assignment
+Idents(all.Tcell) <- all.Tcell$SCT_snn_res.1
+role.ids <- as.character(cluster.ids$metacluster)
+names(role.ids) <- levels(all.Tcell)
+all.Tcell <- RenameIdents(object = all.Tcell, role.ids)
+#Save celltype information in metadata
+all.Tcell[["metacluster"]] <- Idents(object = all.Tcell)
+
+#New cluster names
+Idents(all.Tcell) <- all.Tcell$SCT_snn_res.1
+new.names <- as.character(cluster.ids$name)
+names(new.names) <- levels(all.Tcell)
+all.Tcell <- RenameIdents(object = all.Tcell, new.names)
+#Save celltype information in metadata
+all.Tcell[["cluster"]] <- Idents(object = all.Tcell)
+#Re-order levels
+old.levels <- levels(all.Tcell$cluster)
+level.order <- c(1,3,6,8,9,15,13,10,14,2,4,18,19,16,5,11,12,17,7)
+all.Tcell$cluster <- factor(all.Tcell$cluster, levels = old.levels[level.order])
+all.Tcell$SCT_snn_res.1 <- factor(all.Tcell$SCT_snn_res.1, levels = levels(all.Tcell$SCT_snn_res.1)[level.order])
+DimPlot(all.Tcell, group.by = "cluster")
+DimPlot(all.Tcell, group.by = "SCT_snn_res.1")
+
+#TNK subtype assignment
+subtype.ids <- cluster.ids$subtype
+subtype.ids <- as.character(subtype.ids)
+names(x = subtype.ids) <- levels(x = run1.Tcell)
+run1.Tcell <- RenameIdents(object = run1.Tcell, subtype.ids)
+#Save celltype information in metadata
+run1.Tcell[["TNK_subtype"]] <- Idents(object = run1.Tcell)
+
+
+# plot_celltype 
+DimPlot(object = run1.Tcell, reduction = 'umap', label = FALSE, pt.size = 0.5, group.by = "TNK_subtype")
+
+```
+
+### Compare metaclusters
+by sample and by TIG
+
+```{r}
+#Which metaclusters is each sample made of?
+metacluster.sample.prop <- prop.table(x=table(run1.Tcell$metacluster, run1.Tcell$orig.ident), margin=2)
+write.csv(metacluster.sample.prop, file = paste0(out.path, "metacluster_samples_proportions.csv"), row.names = TRUE)
+metacluster.sample.prop <- as.data.frame(metacluster.sample.prop)
+colnames(metacluster.sample.prop) <- c('metacluster', 'sample', 'prop')
+
+p = ggplot(metacluster.sample.prop, aes(sample, y = prop, fill=metacluster)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('Sample composition (T/NK metaclusters)')
+ggsave(file=file.path(out.path,paste0('sample_composition_metaclusters.png')),width=10, height=6,dpi=300)
+
+
+
+### What percentage of each sample/TIG is in each metacluster? ###
+
+metacluster.sample.prop.df <- as.data.frame(metacluster.sample.prop)
+metacluster.sample.prop.df$TIG <- ifelse(metacluster.sample.prop.df$sample == "TBB129" | metacluster.sample.prop.df$sample  == "TBB171" | metacluster.sample.prop.df$sample  == "TBB111" | metacluster.sample.prop.df$sample  == "TBB165" | metacluster.sample.prop.df$sample  == "TBB338" | metacluster.sample.prop.df$sample  == "TBB184" | metacluster.sample.prop.df$sample  == "TBB011", "TIG2", "TIG3")
+#arrange samples by TIG
+metacluster.sample.prop.df$sample <- factor(metacluster.sample.prop.df$sample, levels=unique(metacluster.sample.prop.df$sample[order(metacluster.sample.prop.df$TIG)]), ordered=TRUE)
+#order metaclusters
+metacluster.sample.prop.df$metacluster <- factor(metacluster.sample.prop.df$metacluster, levels = c("Tregs", "CD4_exhausted", "CD8_exhausted", "naive", "cytotoxic", "proliferating", "NK", "NK_activated", "NKT", "unassigned"))
+
+#Barplots
+p = ggplot(metacluster.sample.prop.df, aes(x= sample, y = prop, fill=TIG)) +
+  geom_bar(stat="identity", position = "dodge")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank(), axis.text.x=element_blank())+
+  facet_wrap(~metacluster, scales = "free")+
+  #coord_flip()+
+  theme(panel.background = element_blank())
+  #ggtitle('Percentage of sample x that falls in cluster y')
+ggsave(file=file.path(out.path,paste0('metacluster_per_sample.png')),width=8, height=4,dpi=300)
+
+
+### Calculate Wilcoxon Test
+tdat <- metacluster.sample.prop.df
+pvalues <- tdat %>% 
+  group_by(metacluster) %>% 
+  summarise(p=wilcox.test(prop~TIG)$p.value)
+tdat <- merge(tdat, pvalues, by.x = 1, by.y =1, all.x = TRUE)
+tdat$p.wt <- paste0('p=',round(tdat$p, digits=3))
+
+#Boxplots (with stats)
+p = ggplot(tdat, aes(x= TIG, y = prop, fill=TIG))+
+  geom_boxplot()+
+  geom_point()+
+  facet_wrap(~metacluster+p.wt, scales="free", ncol=5, strip.position="top")+
+  theme(axis.ticks.x = element_blank(), 
+        axis.text.x=element_blank(), 
+        axis.text.y = element_text(size=12),
+        axis.title.x = element_blank(), 
+        #panel.border = element_rect(colour = "black", fill=NA, size=1),
+        axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.background = element_blank())+
+  ylab("proportion")
+ggsave(file=file.path(out.path,paste0('metacluster_per_TIG_wilcoxon.png')),width=8, height=4,dpi=300)
+
+
+
+
+# Plot single clusters faceted by metacluster
+# cluster.sample.prop <- prop.table(x=table(Idents(object=run1.Tcell), run1.Tcell$orig.ident), margin=2)
+# cluster.sample.prop <- as.data.frame(cluster.sample.prop)
+# colnames(cluster.sample.prop) <- c('cluster', 'sample', 'prop')
+# cluster.sample.prop$TIG <- ifelse(cluster.sample.prop$sample == "TBB129" | cluster.sample.prop$sample  == "TBB171" | cluster.sample.prop$sample  == "TBB111" | cluster.sample.prop$sample  == "TBB165" | cluster.sample.prop$sample  == "TBB338" | cluster.sample.prop$sample  == "TBB184" | cluster.sample.prop$sample  == "TBB011", "TIG2", "TIG3")
+# 
+# #assign metaclusters
+# metaclusters <- read.csv(file = paste0(out.path, "metacluster_assignment_v2.csv"))
+# mcluster.prop <- merge(cluster.sample.prop, metaclusters, by="cluster")
+# 
+# ### Calculate Wilcoxon Test
+# tdat <- as.data.table(mcluster.prop)
+# tdat$cluster <- as.factor(tdat$cluster)
+# tdat$TIG <- as.factor(tdat$TIG)
+# tdat$sample <- as.factor(tdat$sample)
+# pvalues <- tdat %>% 
+#   group_by(cluster) %>% 
+#   summarise(p=wilcox.test(prop~TIG)$p.value)
+# tdat <- merge(tdat, pvalues, by.x = "cluster", by.y ="cluster", all.x = TRUE)
+# tdat$p.wt <- paste0('p=',round(tdat$p, digits=3))
+# 
+# #Boxplots
+# p = ggplot(tdat, aes(x=cluster, y = prop, fill=TIG, color=TIG))+
+#   geom_boxplot()+
+#   geom_point()+
+#   #facet_wrap(~metacluster, scales="free", ncol=10, strip.position="bottom")+
+#   facet_grid(.~metacluster, scales = "free", space="free")+
+#   theme(axis.title.x=element_text("cluster"), axis.text.x=element_blank(), axis.ticks.x = element_blank())+
+#   #theme(panel.background = element_blank())+
+#   xlab("cluster")
+# #ggsave(file=file.path(out.path,paste0('cluster_per_TIG_excl20.png')),width=12, height=5,dpi=300)
+
+```
+
+## Correlation matrix
+
+```{r}
+Idents(run1.Tcell) <- run1.Tcell$SCT_snn_res.1
+cluster.perc <- prop.table(x=table(Idents(object=run1.Tcell), run1.Tcell$orig.ident), margin=2)
+cluster.perc <- t(cluster.perc)
+corr <- cor(cluster.perc)
+
+#for metaclusters
+T.mcluster.perc <- prop.table(x=table(run1.Tcell$metacluster, run1.Tcell$orig.ident), margin=2)
+T.mcluster.perc <- t(T.mcluster.perc)
+
+#plot
+pdf(file = paste0(out.path, "Tcell_corr.pdf"))
+p = corrplot(corr, method="color", type="upper", tl.srt=0, tl.offset = 1, tl.cex=1, tl.col="black", title="Tcell cluster correlations")
+dev.off()
+
+#compute p-values
+p.corr <- cor.mtest(corr, method="pearson")
+p.corr2 <- p.corr[[1]]
+
+
+# plot with p-values below zero in white
+png(file = paste0(out.path, "Tcell_corr_withp.png"))
+p = corrplot(corr, method="color", type="upper", tl.srt=0, tl.col="black", tl.offset = 1, p.mat = p.corr2, sig.level = 0.005, insig = "label_sig", pch="*", pch.cex=1, title="Tcell cluster correlations (P<0.05)")
+dev.off()
+```
+
+## Cluster-independent TIG comparison
+
+```{r}
+
+##### without computing sample averages
+raw.counts <- run1.Tcell@assays$RNA@counts
+raw.counts <- as.data.frame(raw.counts)
+raw.counts$TBB011 <- rowSums(raw.counts[,grep("TBB011", names(raw.counts))])
+raw.counts$TBB035 <- rowSums(raw.counts[,grep("TBB035", names(raw.counts))])
+raw.counts$TBB075 <- rowSums(raw.counts[,grep("TBB075", names(raw.counts))])
+raw.counts$TBB102 <- rowSums(raw.counts[,grep("TBB102", names(raw.counts))])
+raw.counts$TBB111 <- rowSums(raw.counts[,grep("TBB111", names(raw.counts))])
+raw.counts$TBB129 <- rowSums(raw.counts[,grep("TBB129", names(raw.counts))])
+raw.counts$TBB165 <- rowSums(raw.counts[,grep("TBB165", names(raw.counts))])
+raw.counts$TBB171 <- rowSums(raw.counts[,grep("TBB171", names(raw.counts))])
+raw.counts$TBB184 <- rowSums(raw.counts[,grep("TBB184", names(raw.counts))])
+raw.counts$TBB212 <- rowSums(raw.counts[,grep("TBB212", names(raw.counts))])
+raw.counts$TBB214 <- rowSums(raw.counts[,grep("TBB214", names(raw.counts))])
+raw.counts$TBB226 <- rowSums(raw.counts[,grep("TBB226", names(raw.counts))])
+raw.counts$TBB330 <- rowSums(raw.counts[,grep("TBB330", names(raw.counts))])
+raw.counts$TBB338 <- rowSums(raw.counts[,grep("TBB338", names(raw.counts))])
+
+raw.sums <- raw.counts[,34548:34561]
+write.csv(raw.sums, file = paste0(out.path, "sample_sum_counts.csv"), row.names = TRUE)
+```
+
+## Subset all T cell clusters (without NK cells and without cycling T cells)
+for trajectory inference analyses
+
+```{r}
+Idents(run1.Tcell) <- run1.Tcell$metacluster
+T.only <- subset(run1.Tcell, idents = c("NKT", "NK_activated", "NK", "proliferating"), invert=TRUE)
+
+#with proliferating cells
+CD8 <- subset(run1.Tcell, idents = c("CD8_exhausted", "naive", "cytotoxic", "NKT", "NK_activated", "NK"))
+
+#Subset NK cells
+NK <- subset(run1.Tcell, idents = c("NKT", "NK_activated", "NK"))
+saveRDS(NK, file = paste0(out.path, "NK_NKT.rds"))
+
+#proliferating only
+T_KI67 <- subset(run1.Tcell, idents = c("proliferating"))
+saveRDS(T_KI67, file = paste0(out.path, "T_KI67.rds"))
+```
+
+## Check CD4/CD8 ratio in clusters
+
+```{r}
+Idents(T.only) <- T.only$SCT_snn_res.1
+cluster.averages <- AverageExpression(object = T.only, return.seurat = TRUE)
+cluster.averages.df <- as.data.frame(cluster.averages@assays$RNA@counts)
+
+CD8.CD4.df <- as.data.frame(t(cluster.averages.df[c("CD8A", "CD8B", "CD4"),]))
+CD8.CD4.df$cluster <- rownames(CD8.CD4.df)
+CD8.CD4.df <- mutate(CD8.CD4.df, ratio = (CD8A+CD8B)/2/CD4)
+
+p <- ggplot(CD8.CD4.df, aes(cluster,ratio))+
+  geom_point()+
+  ylab("CD8/CD4 ratio")+
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1))
+
+```
+
+

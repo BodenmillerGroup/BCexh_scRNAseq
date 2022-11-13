@@ -1,0 +1,14 @@
+cellphonedb method statistical_analysis TBB171_cellphonedb_meta.txt TBB171_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB171 --result-precision 4
+cellphonedb method statistical_analysis TBB165_cellphonedb_meta.txt TBB165_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB165 --result-precision 4
+cellphonedb method statistical_analysis TBB011_cellphonedb_meta.txt TBB011_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB011 --result-precision 4
+cellphonedb method statistical_analysis TBB035_cellphonedb_meta.txt TBB035_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB035 --result-precision 4
+cellphonedb method statistical_analysis TBB075_cellphonedb_meta.txt TBB075_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB075 --result-precision 4
+cellphonedb method statistical_analysis TBB102_cellphonedb_meta.txt TBB102_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB102 --result-precision 4
+cellphonedb method statistical_analysis TBB111_cellphonedb_meta.txt TBB111_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB111 --result-precision 4
+cellphonedb method statistical_analysis TBB129_cellphonedb_meta.txt TBB129_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB129 --result-precision 4
+cellphonedb method statistical_analysis TBB184_cellphonedb_meta.txt TBB184_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB184 --result-precision 4
+cellphonedb method statistical_analysis TBB212_cellphonedb_meta.txt TBB212_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB212 --result-precision 4
+cellphonedb method statistical_analysis TBB214_cellphonedb_meta.txt TBB214_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB214 --result-precision 4
+cellphonedb method statistical_analysis TBB226_cellphonedb_meta.txt TBB226_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB226 --result-precision 4
+cellphonedb method statistical_analysis TBB330_cellphonedb_meta.txt TBB330_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB330 --result-precision 4
+cellphonedb method statistical_analysis TBB338_cellphonedb_meta.txt TBB338_cellphonedb_count.txt --counts-data hgnc_symbol --project-name TBB338 --result-precision 4

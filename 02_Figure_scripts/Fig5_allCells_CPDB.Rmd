@@ -1,0 +1,132 @@
+---
+title: "Fig5_allCells_CPDB"
+author: "Sandra Tietscher"
+date: "6/2/2020"
+output: html_document
+---
+
+## Load libraries and data, tidy cell type levels
+
+```{r}
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(patchwork)
+library(ggpubr)
+library(igraph)
+library(viridis)
+library(tidyr)
+library(igraph)
+
+path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/cpdb/Fig5_allCells/"
+all.merged <- readRDS(file = paste0(path, "merged_complete_inclCelltype.rds"))
+
+# classify pDCs as myeloid cells for this large overview
+ct_levels <- levels(all.merged$cell.type)
+ct_levels[7] <- "mast cell/basophil"
+ct_levels[9] <- "myeloid"
+levels(all.merged$cell.type) <- ct_levels
+
+## reorder cell type levels
+old.levels <- levels(all.merged$cell.type)
+all.merged$cell.type <- factor(all.merged$cell.type, levels =  old.levels[c(6,4,3,1,2,5,7,8)])
+Idents(all.merged) <- all.merged$cell.type
+
+#subsample to max. 10.000 cells per cell type
+Idents(all.merged) <- all.merged$cell.type
+all.sub <- SubsetData(object = all.merged, max.cells.per.ident=3000, random.seed=11)
+```
+
+# Prepare input files for CellPhoneDB
+
+```{r}
+
+### Generate COUNTS file ###
+#extract raw count_raw & normalize
+count_raw <- all.sub@assays$RNA@counts
+count_norm <- apply(count_raw, 2, function(x) (x/sum(x))*10000)
+#Save COUNTS file with HNGC IDs
+write.table(count_norm, paste0(out.path, "count_subsampled_3000celltype.txt"), sep="\t", quote=F)
+
+#generate META file
+meta_data <- cbind(rownames(all.sub@meta.data), all.sub@meta.data[,"cell.type", drop=F])
+write.table(meta_data, paste0(out.path, "meta_subsampled_3000celltype.txt"), sep="\t", quote=F, row.names=F)
+```
+
+## Run CellPhoneDB using Python
+Run as an one-liner in the console:
+
+cellphonedb method statistical_analysis meta_subsampled_3000celltype.txt count_subsampled_3000celltype.txt --counts-data hgnc_symbol --project-name allCells_sub3000 --result-precision 4
+
+
+
+# Read in CellPhoneDB output
+
+```{r}
+in.path <- "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/LR_analysis/cpdb/Fig5_allCells/out/allCells_sub3000/"
+
+sign.means <- as.matrix(read.table(file=paste0(in.path, "significant_means.txt"), sep = "\t"))
+colnames(sign.means) <- sign.means[1,]
+sign.means <- sign.means[-1,]
+#inspect
+sign.means.df <- as.data.frame(sign.means)
+sign.means.df[1:10, 1:15]
+```
+
+# Count number of significant interactions for each pair & plot
+
+```{r}
+#remove columns with metadata
+sign.means.nometa <- sign.means[,-(1:12)]
+
+#count significant interactions for each (directed) pair
+n.int <- colSums(sign.means.nometa != "")
+#get pair names
+pairs <- as.data.frame(colnames(sign.means.nometa))
+pairs <- separate(pairs, col="colnames(sign.means.nometa)", into=c("A", "B"), sep="\\|", remove = TRUE)
+#add number of significant interactions
+pairs$interactions <- n.int
+
+
+###
+# CellPhoneDB does not actually give directed data --> transform into undirected list by adding counts for A->B and B->A for each pair
+###
+
+directed_g <- graph_from_data_frame(pairs, directed=TRUE)
+undir_g <- as.undirected(directed_g, mode = "collapse", edge.attr.comb = "sum")
+#read out the undirected edge list
+res <- data.frame(get.edgelist(undir_g), get.edge.attribute(undir_g, "interactions"))
+colnames(res) <- c("node1", "node2", "interactions")
+
+#prepare undirected matrix
+adj_matrix <- spread(res[,1:3], key = node2, value = interactions)
+rownames(adj_matrix) <- adj_matrix[,1]
+adj_matrix <- as.matrix(adj_matrix[,-1])
+#transpose
+adj_matrix_t <- t(adj_matrix)
+# convert all NAs to 0
+adj_matrix[is.na(adj_matrix)] <- 0
+adj_matrix_t[is.na(adj_matrix_t)] <- 0
+#Sum matrices (auto-interactions will be counted twice, but this is fair as they go in both directions)
+matrix_compl <- adj_matrix + adj_matrix_t
+
+res_compl <- as.data.frame(matrix_compl)
+res_compl$A <- rownames(res_compl)
+res_compl <- gather(res_compl, key = "B", value = "interactions", 1:8)
+res_compl$A <- factor(res_compl$A, levels = c("epithelial", "endothelial", "fibroblast", "T/NK cell", "myeloid", "B cell", "mast cell/basophil", "plasma cell"))
+res_compl$B <- factor(res_compl$B, levels = c("epithelial", "endothelial", "fibroblast", "T/NK cell", "myeloid", "B cell", "mast cell/basophil", "plasma cell"))
+
+
+#plot heatmap of interaction counts
+p <- ggplot(res_compl)+
+  geom_tile(aes(A, B, fill = interactions))+
+  scale_fill_gradientn(colours=viridis(100))+
+  theme(panel.background = element_blank(), panel.border = element_rect(colour = "black", fill=NA, size=1))+
+  theme(axis.text.x = element_text(angle=45, hjust=1))+
+  ggtitle("Number of significant interactions")
+
+```
+
+

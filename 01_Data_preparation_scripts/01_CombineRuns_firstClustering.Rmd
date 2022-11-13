@@ -1,0 +1,472 @@
+---
+title: "combined_runs_complete"
+author: "Sandra Tietscher"
+date: "10/28/2019"
+output: html_document
+---
+
+## Load libraries and data
+
+```{r}
+if (!require(ggplot2)) install.packages('ggplot2')
+library(ggplot2)
+
+if (!require(dplyr)) install.packages('dplyr')
+library(dplyr)
+
+if (!require(Seurat)) install.packages('Seurat')
+library(Seurat)
+
+if (!require(tidyverse)) install.packages('tidyverse')
+library(tidyverse)
+
+if (!require(data.table)) install.packages('data.table')
+library(data.table)
+
+if (!require(sctransform)) install.packages('sctransform')
+library(sctransform)
+
+library(magrittr)
+library(clustree)
+
+in.path = "~/Code/10x/DoubletFinder/output/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+
+```
+
+## Read in objects ##
+Seurat object containing all cells from Pilot and Run1
+Seurat objects for all Run2 samples created by DoubletFinder
+
+Check metadata (TIG and batch) and correct if necessary.
+
+```{r}
+run1.pilot <- readRDS(file = "~/Code/10x/10x_Run1_Pilot_comb/output/AllMerged_preScaling_correctTIG.rds")
+
+TBB035 <- readRDS(file = paste0(in.path, 'TBB035/TBB035_singlet.rds'))
+TBB184 <- readRDS(file = paste0(in.path, 'TBB184/TBB184_singlet.rds'))
+TBB011 <- readRDS(file = paste0(in.path, 'TBB011/TBB011_singlet.rds'))
+TBB212 <- readRDS(file = paste0(in.path, 'TBB212/TBB212_singlet.rds'))
+
+#assign correct batch and TIG to TBB165
+#run1.pilot$TIG[run1.pilot$orig.ident == "TBB165"] <- "TIG2"
+#run1.pilot$batch[run1.pilot$orig.ident == "TBB165"] <- "B4"
+#save
+#saveRDS(run1.pilot, file = "~/Code/10x/10x_Run1_Pilot_comb/output/AllMerged_preScaling_correctTIG.rds")
+
+```
+
+## Merge files
+
+```{r}
+merge1 <- merge(x=run1.pilot, y = TBB011, add.cell.ids = c("", "TBB011"))
+merge2 <- merge(x=merge1, y = TBB035, add.cell.ids = c("", "TBB035"))
+merge3 <- merge(x=merge2, y = TBB184, add.cell.ids = c("", "TBB184"))
+all.merged <- merge(x=merge3, y = TBB212, add.cell.ids = c("", "TBB212"))
+
+table(all.merged$batch, all.merged$orig.ident)
+table(all.merged$TIG, all.merged$orig.ident)
+
+#save
+saveRDS(all.merged, file = paste0(out.path, "complete_merged_preFilter.rds"))
+#read
+#all.merged <- readRDS (file = paste0(out.path, "complete_merged_preFilter.rds"))
+```
+
+##General QC and filtering
+
+```{r}
+#assign run identity
+all.merged$run <- "Run1"
+all.merged$run[all.merged$batch == "pilot"] <- "pilot"
+all.merged$run[all.merged$batch == "B5" | all.merged$batch == "B6"] <- "Run2"
+table(all.merged$run)
+
+# store mitochondrial percentage in object meta data
+all.merged <- PercentageFeatureSet(all.merged, pattern = "^MT-", col.name = "percent.mt")
+all.merged$percent.mito <- NULL
+all.merged$DF_hi.lo <- NULL
+
+# QC plots
+VlnPlot(object = all.merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, sort = FALSE)
+VlnPlot(object = all.merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "run", sort = FALSE)
+VlnPlot(object = all.merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "TIG", sort = FALSE)
+
+plot(density(all.merged@meta.data$percent.mt), main = "Mitochondrial Percentage Density Plot", xlab = "Percent Mitochondrial Genes")
+plot(density(all.merged@meta.data$nCount_RNA), main = "Total Reads", xlab = "Total Reads per Cell")
+plot(density(all.merged@meta.data$nFeature_RNA), main = "Number of detected genes", xlab = "Deteced Genes per cell")
+
+FeatureScatter(object = all.merged, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = all.merged@meta.data$orig.ident)
+FeatureScatter(object = all.merged, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = all.merged@meta.data$orig.ident)
+FeatureScatter(object = all.merged, feature1 = "nFeature_RNA", feature2 = "percent.mt", group.by = all.merged@meta.data$orig.ident)
+
+# Filter out cells that have unique feature counts over 7,000 or less than 200 and cells with >20 % mitotitic gene counts
+all.merged <- subset(x = all.merged, subset = nFeature_RNA > 200 & nFeature_RNA < 7500 & percent.mt < 20  & nCount_RNA < 75000)
+
+# Compare filtered and unfiltered
+table(all.merged.filtered@meta.data$orig.ident)
+table(all.merged@meta.data$orig.ident)
+
+nCells_sample <- table(all.merged.filtered@meta.data$orig.ident)
+nCells_sample 
+write.csv(nCells_sample, file = paste0(out.path, "CellsPerSample_postFilter.csv"), row.names = FALSE)
+
+#all.merged <- all.merged.filtered
+#rm(all.merged.filtered)
+
+nCells_TIG <- table(all.merged@meta.data$TIG)
+nCells_TIG
+write.csv(nCells_TIG, file = paste0(out.path, "CellsPerTIG_postFilter.csv"), row.names = FALSE)
+
+nCells_batch <- table(all.merged@meta.data$batch)
+nCells_batch
+write.csv(nCells_batch, file = paste0(out.path, "CellsPerBatch_postFilter.csv"), row.names = FALSE)
+
+#save
+saveRDS(all.merged, file = paste0(out.path, "complete_merged_postFilter.rds"))
+#read
+all.merged <- readRDS(file = paste0(out.path, "complete_merged_postFilter.rds"))
+
+# get mean reads and median gene counts per cell for each sample
+mean_reads <- as_tibble(all.merged@meta.data[,c("orig.ident", "nCount_RNA", "nFeature_RNA")])
+mean_reads <- mean_reads %>% group_by(orig.ident) %>% summarise(mean_reads = mean(nCount_RNA), median_genes = median(nFeature_RNA))
+write.csv(mean_reads, file = paste0(out.path, "postfilter_stats.csv"))
+```
+
+## Apply sctransform normalization
+
+This replaces FindVariableFeatures, Normalize and ScaleData. 
+For a start, don't regress out anything.
+```{r}
+future::plan("multiprocess", workers = 2)
+options(future.globals.maxSize = 5* 1000 * 1024^2)
+
+# run sctransform
+all.merged <- SCTransform(all.merged, verbose = TRUE)
+
+saveRDS(all.merged, file = paste0(out.path, "complete_merged_sctransformed.rds"))
+
+#read
+all.merged <- readRDS (file = paste0(out.path, "complete_merged_sctransformed.rds"))
+```
+
+## Run and inspect PCA (linear dimensional reduction) to determine "significant" principal components
+
+By default, the variable features are used as input, but can be defined using features. We have typically found that running dimensionality reduction on highly variable features can improve performance.
+
+```{r}
+all.merged <- RunPCA(object = all.merged, features = VariableFeatures(object = all.merged), verbose = FALSE)
+
+# Examine and visualize PCA results in a few different ways
+print(x = all.merged[['pca']], dims = 1:5, nfeatures = 5, projected = FALSE)
+VizDimLoadings(object = all.merged, dims = 1:2)
+DimPlot(object = all.merged)
+
+#for easy exploration of the primary sources of heterogeneity in a dataset
+DimHeatmap(object = all.merged, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(object = all.merged, dims = 20:30, cells = 500, balanced = TRUE)
+
+ElbowPlot(object = all.merged, ndim = 50)
+```
+
+## Graph-based clustering
+
+```{r}
+all.merged <- FindNeighbors(object = all.merged, dims = 1:27)
+all.merged<- FindClusters(object = all.merged, resolution = 2)
+
+#If the clusters are not ordered correctly:
+#cluster.order <- c(0:57)
+#all.merged@active.ident <- factor(x = all.merged@active.ident, levels = cluster.order)
+
+#Query number of clusters and cells per cluster
+cells.per.cluster <- table(... = all.merged@meta.data$SCT_snn_res.2)
+cells.per.cluster
+write.csv(cells.per.cluster, file = paste0(out.path, "dim27_res2_CellsPerCluster.csv"), row.names = FALSE)
+
+```
+## Clustree analysis
+
+```{r}
+p = clustree(all.merged, prefix = "SCT_snn_res.", exprs = "scale.data")
+
+```
+
+## Run Dimenstional Reduction Analysis (UMAP)
+As input to the UMAP, use the same PCs as input to the clustering analysis.
+
+```{r}
+
+
+### run UMAP ###
+
+all.merged <- RunUMAP(object = all.merged, dims = 1:27)
+
+# note that you can set `label = TRUE` or use the LabelClusters function to help label individual clusters
+DimPlot(object = all.merged, reduction = 'umap', label = TRUE)
+DimPlot(object = all.merged, reduction = 'umap', group.by = "orig.ident")
+DimPlot(object = all.merged, reduction = 'umap', group.by = "batch")
+DimPlot(object = all.merged, reduction = 'umap', group.by = "TIG")
+
+FeaturePlot(object = all.merged, reduction = 'umap', features = c("PECAM1", "EPCAM", "FAP", "PTPRC", "CD3E", "CD14"))
+
+# Save the object at this point to easily load it back without rerunning the computationally intensive steps above.
+#saveRDS(all.merged, file = paste0(out.path, "merged_complete_umap.rds"))
+all.merged <- readRDS(file = paste0(out.path, "merged_complete_umap.rds"))
+
+# Cluster proportions by sample
+cluster.sample = table(Idents(object=all.merged), all.merged$orig.ident)
+write.csv(cluster.sample, file = paste0(out.path, "cellnr_per_cluster_bySample.csv"), row.names = TRUE)
+cluster.sample.prop <- prop.table(x=table(Idents(object=all.merged), all.merged$orig.ident), margin=2)
+write.csv(cluster.sample.prop, file = paste0(out.path, "cluster_samples_proportions.csv"), row.names = TRUE)
+```
+
+## Finding differentially expressed genes
+
+```{r}
+Idents(all.merged) <- all.merged$seurat_clusters
+cluster.markers.MAST <- FindAllMarkers(object = all.merged, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use="MAST")
+write.csv(cluster.markers.MAST, file = paste0(out.path, "DE_cluster_AllMarkerGenes_MAST.csv"), row.names = FALSE)
+marker.genes <- cluster.markers.MAST %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+write.csv(marker.genes, file = paste0(out.path, "DE_cluster_MarkerGenesTop10_MAST.csv"), row.names = TRUE)
+```
+
+## Feature vectors
+
+```{r}
+CCLs = paste0("CCL", c(1:28))
+CX_XCs = c(paste0("CXCL", c(1:17)), "CXCL4L1", "XCL1", "XCL2", "CX3CL1")
+ILs = paste0("IL", c(1:33))
+other_cytokines = c("TNF", "IFNG", "IFNA1", "IFNB1", "TGFB1", "CSF1", "CSF2", "CSF3", "EPO")
+
+interaction_other = c("CD47", "SIRPG", "SIRPA", "FASLG", "FAS", "CD80", "CD86", "CTLA4")
+cytokine_receptor = c('CCR1','CCR2', 'CCR3', 'CCR4', 'CCR5', 'CCR6','CCR7','CCR8', 'CCR9','CCR10', 'CCR11', 'IL10RA', 'IL4R', 'CXCR1','CXCR2', 'CXCR3', 'CXCR4', 'CXCR5',  'CXCR6', 'CXCR7')
+```
+
+
+
+## Plot marker expression ##
+
+```{r}
+
+VlnPlot(object = all.merged, features = c('nFeature_RNA'), pt.size = 0)
+DotPlot(object = all.merged, features = c("PTPRC", "CD3E", "CD14", "CD68"))
+FeaturePlot(object = all.merged, features = c("nFeature_RNA", "nCount_RNA"))
+
+```
+
+## Assigning cell type identity to clusters
+
+```{r}
+
+#Read in table with cluster ids
+Idents(all.merged) <-all.merged$SCT_snn_res.2
+cluster.ids <- read.csv(file = paste0(out.path, "cluster_celltypes_res2_v2.csv"))
+
+new.cluster.ids <- cluster.ids$cell.type
+new.cluster.ids <- as.character(new.cluster.ids)
+names(x = new.cluster.ids) <- levels(x = all.merged)
+all.merged <- RenameIdents(object = all.merged, new.cluster.ids)
+
+#Save celltype information in metadata
+all.merged[["cell.type"]] <- Idents(object = all.merged)
+
+# Celltype proportions by sample
+celltype.sample = table(Idents(object=all.merged), all.merged$orig.ident)
+write.csv(celltype.sample, file = paste0(out.path, "celltype_samples.csv"), row.names = FALSE)
+celltype.sample.prop <- prop.table(x=table(Idents(object=all.merged), all.merged$orig.ident), margin=2)
+write.csv(celltype.sample.prop, file = paste0(out.path, "celltype_samples_proportions.csv"), row.names = TRUE)
+
+#Reset active IDs to original clusters
+#Idents(all.merged) <- all.merged[["seurat_clusters"]]
+
+# plot_celltype 
+DimPlot(object = all.merged, reduction = 'umap', label = FALSE, pt.size = 0.5, group.by = "cell.type")
+
+#Save the object with assigned cluster ids
+#saveRDS(all.merged, file = paste0(out.path, "merged_complete_inclCelltype.rds"))
+#Load the object
+all.merged <- readRDS(file = paste0(out.path, "merged_complete_inclCelltype.rds"))
+```
+
+## Display and compare cell type frequencies
+
+```{r}
+
+# Display cell type frequencies in stacked barplot
+
+celltype.prop <- read.csv(file = paste0(out.path, "celltype_samples_proportions.csv"))
+celltype.prop.gat <- celltype.prop %>% gather(key = "sample", value = "proportion", "TBB011":"TBB338")
+colnames(celltype.prop.gat) <- c("cell.type", "sample", "proportion")
+
+celltype.order <- c("T/NK cell", "myeloid", "B cell", "granulocyte", "cDC", "pDC", "plasma cell", "epithelial", "fibroblast",  "endothelial")
+celltype.prop.gat$cell.type <- factor(x = celltype.prop.gat$cell.type, levels = celltype.order)
+#fct_rev(celltype.prop.gat$cell.type)
+
+ggplot(celltype.prop.gat, aes(sample, y = proportion, fill=cell.type)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank(), axis.text.x = element_text(angle = 30))+
+  ggtitle('Sample composition by cell type')
+
+ggsave(file=file.path(out.path,paste0('sample_composition_celltype.png')),width=8, height=4,dpi=300)
+
+
+## Display cell type proportions by TIG ##
+
+RNA_perc <- prop.table(x=table(all.merged$orig.ident, all.merged$cell.type), margin=1)
+RNA_perc <- as.data.table(RNA_perc)
+colnames(RNA_perc) <- c("sample", "cell.type", "percentage")
+RNA_perc$method <- "10x"
+RNA_perc$TIG <- ifelse(RNA_perc$sample == "TBB129" | RNA_perc$sample  == "TBB171" | RNA_perc$sample  == "TBB111" | RNA_perc$sample == "TBB165" | RNA_perc$sample  == "TBB338" | RNA_perc$sample  == "TBB184" | RNA_perc$sample  == "TBB011", "TIG2", "TIG3")
+RNA_perc$NA_treatment <- ifelse(RNA_perc$sample  == "TBB171" | RNA_perc$sample == "TBB165", "yes", "no")
+
+### Calculate Wilcoxon Test
+tdat <- RNA_perc
+pvalues <- tdat %>% 
+  group_by(cell.type) %>% 
+  summarise(p=wilcox.test(percentage~NA_treatment)$p.value)
+tdat <- merge(tdat, pvalues, by.x = "cell.type", by.y ="cell.type", all.x = TRUE)
+tdat$p.wt <- paste0('p=',round(tdat$p, digits=3))
+
+#Boxplots 
+p = ggplot(tdat, aes(x= NA_treatment, y = percentage, fill=NA_treatment))+
+  geom_boxplot()+
+  geom_point()+
+  facet_wrap(~cell.type+p.wt, scales="free", ncol=5, strip.position="bottom")+
+  theme(axis.ticks.x = element_blank(), axis.text.x=element_blank(), axis.title.x = element_blank())+
+  #theme(panel.background = element_blank())+
+  ylab("proportion")
+
+ggsave(file=file.path(out.path,paste0('celltype_per_NAtreatment_wtest.png')),width=8, height=5,dpi=300)
+```
+
+### Celltype direct comparison (Cytof & 10x)
+
+```{r}
+## Cell type percentages
+cytof_perc <- read.csv(file=paste0(out.path, "cytof_celltype_prop.csv"))
+cytof_perc_gat <- gather(cytof_perc, key = "sample", value="percentage", "TBB075", "TBB102", "TBB111", "TBB129", "TBB165", "TBB171", "TBB214", "TBB226", "TBB011", "TBB035", "TBB184", "TBB212")
+cytof_perc_gat$method <- "cytof"
+
+p = ggplot(cytof_perc_gat, aes(sample, y = percentage, fill=cell.type)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('CyTOF percentages')
+ggsave(file=file.path(out.path,paste0('CyTOF_percentages_TNK.png')),width=8, height=4,dpi=300)
+
+
+## Adapt 10x celltypes to fit CyTOF celltypes
+
+all.merged$cell.type <- factor(all.merged$cell.type, levels=c("T/NK cell", "myeloid", "B cell", "dendritic cell", "granulocyte", "plasma cell", "epithelial", "endothelial", "fibroblast", "pDC", "cDC"))
+all.merged$cell.type[all.merged$cell.type == "cDC"] <- "dendritic cell"
+all.merged$cell.type[all.merged$cell.type == "pDC"] <- "dendritic cell"
+
+RNA_perc <- prop.table(x=table(all.merged$orig.ident, all.merged$cell.type), margin=1)
+RNA_perc <- as.data.table(RNA_perc)
+colnames(RNA_perc) <- c("sample", "cell.type", "percentage")
+RNA_perc$method <- "10x"
+RNA_perc$TIG <- ifelse(RNA_perc$Patient == "TBB129" | RNA_perc$Patient  == "TBB171" | RNA_perc$Patient  == "TBB111" | RNA_perc$Patient  == "TBB165" | RNA_perc$Patient  == "TBB338" | RNA_perc$sample  == "TBB184" | RNA_perc$sample  == "TBB011", "TIG2", "TIG3")
+
+p = ggplot(RNA_perc, aes(sample, y = percentage, fill=cell.type)) +
+  geom_bar(stat="identity")+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('10x percentages')
+
+#combine cytof and 10x percentages
+RNA_perc$TIG <- NULL
+celltype.perc <- rbind(cytof_perc_gat, RNA_perc)
+celltype.perc$cell.type <- factor(celltype.perc$cell.type, levels=c("T/NK cell", "myeloid", "B cell", "dendritic cell", "granulocyte", "plasma cell", "epithelial", "endothelial", "fibroblast", "other"))
+celltype.perc$method <- factor(celltype.perc$method, levels=c("cytof", "10x"))
+celltype.perc.8samples <- celltype.perc[!(celltype.perc$sample == "TBB330" | celltype.perc$sample == "TBB338"),]
+celltype.perc.8samples <- na.omit(celltype.perc.8samples)
+
+p = ggplot(celltype.perc.8samples, aes(method, y = percentage, fill=cell.type)) +
+  geom_bar(stat="identity")+
+  facet_wrap(~sample, ncol=6)+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  #coord_flip()+
+  theme(panel.background = element_blank())+
+  ggtitle('Celltype percentages: CyTOF vs. scRNA-seq')
+```
+
+## Create a subset with immune cells only (based on cluster numbers) & save as Seurat object
+```{r}
+## Create a Seurat object with only the immune cell clusters
+run1.immune <- subset(x = all.merged, idents = c("T/NK cell", "myeloid", "B cell", "granulocyte", "cDC", "pDC", "plasma cell"))
+#Test
+DimPlot(object = run1.immune, reduction = 'umap', label = TRUE, pt.size = 0.5)
+#Save Seurat object
+saveRDS(run1.immune, file = paste0(out.path, "immune.rds"))
+rm(run1.immune)
+
+## T/NK cell subset
+run1.TNK <- subset(x = all.merged, idents = "T/NK cell")
+saveRDS(run1.TNK, file = paste0(out.path, "T_NK_cells.rds"))
+rm(run1.TNK)
+
+## Myeloid subset (incl. DCs)
+run1.myeloid <- subset(x = all.merged, idents = c("myeloid", "cDC", "pDC"))
+saveRDS(run1.myeloid, file = paste0(out.path, "myeloid_inclDC.rds"))
+rm(run1.myeloid)
+
+## B cell subset
+run1.B <- subset(x = all.merged, idents = "B cell")
+saveRDS(run1.B, file = paste0(out.path, "B_cells.rds"))
+rm(run1.B)
+
+## Plasma cell subset
+run1.PC <- subset(x = all.merged, idents = "plasma cell")
+saveRDS(run1.PC, file = paste0(out.path, "plasma_cells.rds"))
+rm(run1.PC)
+
+## Granulocyte subset
+run1.gran <- subset(x = all.merged, idents = "granulocyte")
+saveRDS(run1.gran, file = paste0(out.path, "granulocytes.rds"))
+rm(run1.gran)
+
+## tumor cell subset
+run1.ep <- subset(x = all.merged, idents = "epithelial")
+saveRDS(run1.ep, file = paste0(out.path, "epithelial.rds"))
+rm(run1.ep)
+
+## fibroblast subset
+run1.fib <- subset(x = all.merged, idents = "fibroblast")
+saveRDS(run1.fib, file = paste0(out.path, "fibroblast.rds"))
+rm(run1.fib)
+
+## endothelial cell subset
+run1.endo <- subset(x = all.merged, idents = "endothelial")
+saveRDS(run1.endo, file = paste0(out.path, "endothelial.rds"))
+rm(run1.endo)
+```
+
+# Quantify chemokine expression per cell type
+
+```{r chemokine-expression}
+
+chemokines <- c("CXCL9", "CXCL10", "CXCL13", "CCL4", "CCL5", "CCL3", "CXCL8", "CCL17", "CCL22")
+
+chemokine.tab <- data.frame(celltype = all.merged$cell.type)
+for (i in chemokines) {
+  chemokine.tab[,i] <- ifelse(all.merged@assays$RNA@counts[i,] > 0, 1, 0)
+}
+
+chemokine.add = data.frame(celltype = unique(chemokine.tab$celltype))
+for (i in chemokines) {
+  count.i <- as.data.frame(table(chemokine.tab$celltype, chemokine.tab[,i])[,"1"])
+  colnames(count.i) <- i
+  count.i$celltype <- rownames(count.i)
+  chemokine.add <- merge(chemokine.add, count.i, by = "celltype")
+}
+
+
+```
+
+
+

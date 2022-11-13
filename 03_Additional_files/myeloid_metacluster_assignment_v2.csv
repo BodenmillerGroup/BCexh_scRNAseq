@@ -1,0 +1,17 @@
+cluster,metacluster,cluster_name
+0,cDC2,cDC2
+1,TAM,TAM-1
+2,TAM,TAM-2
+3,Monocyte,mono-1
+4,TAM,TAM-3
+5,Monocyte,mono-2
+6,TAM,TAM-4
+7,TAM,TAM-5
+8,TAM,TAM-6
+9,unassigned,M-unassigned
+10,Proliferating,M-proliferating
+11,aDC,aDC
+12,LC,LC
+13,pDC,pDC
+14,cDC1,cDC1
+15,TAM,TAM-7

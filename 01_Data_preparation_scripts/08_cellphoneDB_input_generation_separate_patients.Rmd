@@ -1,0 +1,63 @@
+---
+title: "CombinedRuns_cpdb_input"
+author: "Sandra Tietscher"
+date: "11/1/2019"
+output: html_document
+---
+
+`## Load libraries and data
+
+```{r}
+if (!require(ggplot2)) install.packages('ggplot2')
+library(ggplot2)
+
+if (!require(dplyr)) install.packages('dplyr')
+library(dplyr)
+
+if (!require(Seurat)) install.packages('Seurat')
+library(Seurat)
+
+if (!require(tidyverse)) install.packages('tidyverse')
+library(tidyverse)
+
+if (!require(data.table)) install.packages('data.table')
+library(data.table)
+
+library(ggrepel)
+library(ggpubr)
+
+in.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/"
+out.path = "~/Code/10x/10x_Run1_Run2_Pilot_comb/output/cpdb/"
+
+all.merged <- readRDS(paste0(in.path, "merged_complete_inclCelltype.rds"))
+
+```
+
+## Subset each sample separately (celltype only)
+Prepare input files for CellPhoneDB (with each celltype being one cluster --> no subclustering within cell types)
+
+```{r}
+Idents(all.merged) <- all.merged$orig.ident
+
+for (i in c("TBB075", "TBB102", "TBB111", "TBB129", "TBB165", "TBB171", "TBB214", "TBB226", "TBB330", "TBB338", "TBB011", "TBB035", "TBB212", "TBB184")) {
+  
+sub.i <- subset(all.merged, idents=i)
+  
+  #get and save cellnumber per celltype
+  cellnr <- as.data.frame(table(sub.i$cell.type))
+  colnames(cellnr) <- c("cluster", "cellnumber")
+  write.csv(cellnr, paste0(out.path, "separate_patients/cDC_as_myeloid/",i, "_cellnr_celltype.csv"), row.names = FALSE)
+  
+  ### Generate COUNTS file ###
+#extract raw count_raw & normalize
+count_raw <- sub.i@assays$RNA@counts
+count_norm <- apply(count_raw, 2, function(x) (x/sum(x))*10000)
+#Save COUNTS file with HNGC IDs
+write.table(count_norm, paste0(out.path, "separate_patients/cDC_as_myeloid/", i, "_cellphonedb_count.txt"), sep="\t", quote=F)
+
+#generate META file
+meta_data <- cbind(rownames(sub.i@meta.data), sub.i@meta.data[,"cell.type", drop=F])
+write.table(meta_data, paste0(out.path, "separate_patients/cDC_as_myeloid/", i, "_cellphonedb_meta.txt"), sep="\t", quote=F, row.names=F)
+}
+
+```

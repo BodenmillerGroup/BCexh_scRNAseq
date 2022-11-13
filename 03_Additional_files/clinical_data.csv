@@ -1,0 +1,15 @@
+Patient_ID,Health Status,Gender,Age at Surgery,Menopause Status,Histopathology,T Staging,N Staging,M Staging,Grade,Grade comment,Lymph Node Status (L),Resection,ER Status by IHC,ER IRS Score,ER percent positive cells by IHC,PR Status by IHC,PR IRS Score,PR percent positive cells by IHC,HER2 Status by IHC,HER2 IHC Score,HER2 Status by FISH or SISH,Ki-67 percent positive cells by IHC,Clinical Subtype,Neoadjuvant Therapy Received,Previous Cancer Incidences,IE
+BB011,Breast cancer patient,F,80,post,InvasiveDuctalCarcinoma,pT3,N1a,M1pul,G3,na,L1,R0,P,12,na,P,6,na,N,0,na,70,LumB,no,na,IE1
+BB035,Breast cancer patient,F,47,pre,InvasiveLobularCarcinoma-mixed-TubularCarcinoma,pT2,N0,M0,G1,na,L0,R0,P,12,na,P,12,na,N,1,na,20,LumB,no,na,IE2
+BB075,Breast cancer patient,F,66,post,InvasiveDuctalCarcinoma,pT2,N0,M0,G3,na,L0,R0,P,12,na,P,12,na,N,1,na,20,LumB,no,na,IE2
+BB102,Breast cancer patient,F,65,post,InvasiveLobularCarcinoma,pT2,N1a,M0,G2,na,L0,R0,P,12,na,P,6,na,N,1,na,15,LumA,no,na,IE2
+BB111,Breast cancer patient,F,45,pre,InvasiveMucinousCarcinoma,pT2,N1,M0,G1,na,na,Rx,P,12,na,P,12,na,N,0,na,5,LumA,no,na,IE1
+BB129,Breast cancer patient,F,87,post,InvasiveDuctalCarcinoma,pT2,N0,M0,G3,na,na,R0,P,12,na,P,3,na,N,1,na,20,LumB,no,na,IE1
+BB165,Breast cancer patient,F,34,pre,InvasiveDuctalCarcinoma,ypT2,N0,M0,G3,preneoadjuvant assessment,na,R0,N,0,na,N,0,na,N,1,na,80,TN,yes,na,IE1
+BB171,Breast cancer patient,F,35,pre,InvasiveDuctalCarcinoma,ypT2,N0,M0,G3,preneoadjuvant assessment,na,R0,N,1,na,P,3,na,N,0,na,60,LumB,yes,na,IE1
+BB184,Breast cancer patient,F,54,post,InvasiveDuctalCarcinoma,pT2,N0,M0,G2,na,L0,R0,N,1,na,P,6,na,N,0,na,35,LumB,no,yes,IE1
+BB212,Breast cancer patient,F,46,pre,InvasiveDuctalCarcinoma,pT1c,N1a,M0,G3,na,L1,R0,P,12,na,P,12,na,N,1,na,40,LumB,no,na,IE2
+BB214,Breast cancer patient,F,75,post,InvasiveDuctalCarcinoma,pT2,N0,M0,G2,na,L0,R0,P,12,na,P,6,na,N,2,negative,30,LumB,no,yes,IE2
+BB226,Breast cancer patient,F,49,pre,InvasiveDuctalCarcinoma,pT2(m),N1a,M0,G1,na,Lx,R0,P,12,na,P,12,na,N,0,na,5,LumA,no,na,IE2
+BB330,Breast cancer patient,F,91,post,InvasiveDuctalCarcinoma,pT1c(m),Nx,Mx,G3,na,na,R0,P,12,na,P,8,na,P,2,positive,na,LumB/HER2,no,na,IE2
+BB338,Breast cancer patient,F,54,pre,InvasiveDuctalCarcinoma-mixed with other types,pT1c,N0,Mx,G3,na,na,R0,N,0,na,P,3,na,N,0,na,85,LumB,no,yes,IE1
